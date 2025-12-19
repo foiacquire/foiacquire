@@ -51,7 +51,7 @@ Document Content:
 Respond with ONLY 3-5 comma-separated lowercase tags. Example: cia, mind-control, mkultra, memo, cold-war"#;
 
 /// Configuration for LLM client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmConfig {
     /// Whether LLM summarization is enabled
     #[serde(default = "default_enabled")]
@@ -114,6 +114,11 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
+    /// Check if the config equals the default (for skip_serializing_if).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     pub fn with_endpoint(mut self, endpoint: &str) -> Self {
         self.endpoint = endpoint.to_string();
         self

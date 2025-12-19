@@ -1,6 +1,6 @@
 //! CLI commands implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::sync::Mutex;
 
-use crate::config::{load_settings, Config, Settings};
+use crate::config::{load_settings_with_options, Config, LoadOptions, Settings};
 use crate::llm::LlmClient;
 use crate::models::{Document, DocumentStatus, DocumentVersion, Source, SourceType};
 use crate::ocr::TextExtractor;
@@ -25,9 +25,17 @@ use super::progress::DownloadProgress;
 #[command(about = "FOIA document acquisition and research system")]
 #[command(version)]
 pub struct Cli {
-    /// Data directory
+    /// Data directory (overrides config file)
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
+
+    /// Config file path (overrides auto-discovery)
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
+
+    /// Resolve relative paths from current working directory instead of config file location
+    #[arg(long, global = true)]
+    cwd: bool,
 
     /// Enable verbose logging
     #[arg(short, long, global = true)]
@@ -81,6 +89,12 @@ enum Commands {
     State {
         #[command(subcommand)]
         command: StateCommands,
+    },
+
+    /// Configuration management
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
     },
 
     /// Scrape documents from one or more sources (crawl + download combined)
@@ -335,6 +349,18 @@ enum SourceCommands {
 }
 
 #[derive(Subcommand)]
+enum ConfigCommands {
+    /// Recover a skeleton config from an existing database
+    Recover {
+        /// Path to the database file
+        database: PathBuf,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum StateCommands {
     /// Show crawl status
     Status {
@@ -355,10 +381,12 @@ enum StateCommands {
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let mut settings = load_settings().await;
-    if let Some(data_dir) = cli.data_dir {
-        settings = Settings::with_data_dir(data_dir);
-    }
+    let options = LoadOptions {
+        config_path: cli.config,
+        use_cwd: cli.cwd,
+        data_dir: cli.data_dir,
+    };
+    let settings = load_settings_with_options(options).await;
 
     match cli.command {
         Commands::Init => cmd_init(&settings).await,
@@ -381,6 +409,11 @@ pub async fn run() -> anyhow::Result<()> {
             StateCommands::Status { source_id } => cmd_crawl_status(&settings, source_id).await,
             StateCommands::Clear { source_id, confirm } => {
                 cmd_crawl_clear(&settings, &source_id, confirm).await
+            }
+        },
+        Commands::Config { command } => match command {
+            ConfigCommands::Recover { database, output } => {
+                cmd_config_recover(&database, output.as_deref()).await
             }
         },
         Commands::Scrape {
@@ -679,8 +712,8 @@ async fn cmd_crawl_status(settings: &Settings, source_id: Option<String>) -> any
     let source_repo = SourceRepository::new(&settings.database_path())?;
     let crawl_repo = CrawlRepository::new(&settings.database_path())?;
 
-    let sources = match source_id {
-        Some(id) => source_repo.get(&id)?.into_iter().collect(),
+    let sources = match &source_id {
+        Some(id) => source_repo.get(id)?.into_iter().collect(),
         None => source_repo.get_all()?,
     };
 
@@ -689,9 +722,31 @@ async fn cmd_crawl_status(settings: &Settings, source_id: Option<String>) -> any
         return Ok(());
     }
 
+    // Use bulk queries when loading all sources (avoids N+1)
+    let (all_states, all_stats) = if source_id.is_none() {
+        (crawl_repo.get_all_stats()?, crawl_repo.get_all_request_stats()?)
+    } else {
+        (std::collections::HashMap::new(), std::collections::HashMap::new())
+    };
+
     for source in sources {
-        let state = crawl_repo.get_crawl_state(&source.id)?;
-        let stats = crawl_repo.get_request_stats(&source.id)?;
+        // Use bulk-loaded data when available, otherwise fetch individually
+        let state = if source_id.is_none() {
+            all_states.get(&source.id).cloned().unwrap_or_else(|| {
+                crate::models::CrawlState {
+                    source_id: source.id.clone(),
+                    ..Default::default()
+                }
+            })
+        } else {
+            crawl_repo.get_crawl_state(&source.id)?
+        };
+
+        let stats = if source_id.is_none() {
+            all_stats.get(&source.id).cloned().unwrap_or_default()
+        } else {
+            crawl_repo.get_request_stats(&source.id)?
+        };
 
         println!(
             "\n{}",
@@ -1387,13 +1442,9 @@ fn get_pending_count(db_path: &std::path::Path, source_id: Option<&str>) -> anyh
     if let Some(sid) = source_id {
         Ok(crawl_repo.get_crawl_state(sid)?.urls_pending)
     } else {
-        let source_repo = SourceRepository::new(db_path)?;
-        let sources = source_repo.get_all()?;
-        let mut total = 0u64;
-        for s in sources {
-            total += crawl_repo.get_crawl_state(&s.id)?.urls_pending;
-        }
-        Ok(total)
+        // Use bulk query to avoid N+1 pattern
+        let all_stats = crawl_repo.get_all_stats()?;
+        Ok(all_stats.values().map(|s| s.urls_pending).sum())
     }
 }
 
@@ -1419,7 +1470,8 @@ async fn cmd_status(settings: &Settings) -> anyhow::Result<()> {
     println!("{:<20} {}", "Sources:", source_repo.get_all()?.len());
     println!("{:<20} {}", "Total Documents:", doc_repo.count()?);
 
-    // Count by status
+    // Count by status (single bulk query instead of N+1)
+    let status_counts = doc_repo.count_all_by_status()?;
     for status in [
         DocumentStatus::Pending,
         DocumentStatus::Downloaded,
@@ -1427,9 +1479,10 @@ async fn cmd_status(settings: &Settings) -> anyhow::Result<()> {
         DocumentStatus::Indexed,
         DocumentStatus::Failed,
     ] {
-        let count = doc_repo.get_by_status(status)?.len();
-        if count > 0 {
-            println!("{:<20} {}", format!("  {}:", status.as_str()), count);
+        if let Some(&count) = status_counts.get(status.as_str()) {
+            if count > 0 {
+                println!("{:<20} {}", format!("  {}:", status.as_str()), count);
+            }
         }
     }
 
@@ -3796,7 +3849,49 @@ async fn cmd_import(
     checkpoint_interval: usize,
 ) -> anyhow::Result<()> {
     use std::collections::{HashMap, HashSet};
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use warc::{WarcHeader, WarcReader};
+
+    /// A BufReader wrapper that tracks total bytes consumed.
+    /// Uses Arc<AtomicU64> so position can be read even after reader is consumed.
+    struct PositionTrackingReader<R> {
+        inner: BufReader<R>,
+        position: Arc<AtomicU64>,
+    }
+
+    impl<R: Read> PositionTrackingReader<R> {
+        fn new(inner: R, start_position: u64) -> Self {
+            Self {
+                inner: BufReader::with_capacity(1024 * 1024, inner),
+                position: Arc::new(AtomicU64::new(start_position)),
+            }
+        }
+
+        fn position_handle(&self) -> Arc<AtomicU64> {
+            Arc::clone(&self.position)
+        }
+    }
+
+    impl<R: Read> Read for PositionTrackingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.position.fetch_add(n as u64, Ordering::Relaxed);
+            Ok(n)
+        }
+    }
+
+    impl<R: Read> BufRead for PositionTrackingReader<R> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.inner.fill_buf()
+        }
+
+        fn consume(&mut self, amt: usize) {
+            self.position.fetch_add(amt as u64, Ordering::Relaxed);
+            self.inner.consume(amt)
+        }
+    }
 
     let db_path = settings.database_path();
     let documents_dir = settings.documents_dir.clone();
@@ -3884,13 +3979,21 @@ async fn cmd_import(
                 .unwrap_or_else(|| "progress".to_string()),
         );
 
-        // Read previous progress (record count) if resuming
-        let mut records_to_skip: usize = 0;
+        // Detect if gzipped (needed before parsing progress)
+        let is_gzip = warc_path
+            .extension()
+            .is_some_and(|ext| ext == "gz")
+            || warc_path
+                .to_string_lossy()
+                .contains(".warc.gz");
+
+        // Read previous progress if resuming
+        // Format: "done", "offset:12345" (byte offset for uncompressed), or "error:message"
+        let mut resume_byte_offset: u64 = 0;
         let mut file_fully_processed = false;
 
         if resume && progress_path.exists() {
             if let Ok(progress_str) = std::fs::read_to_string(&progress_path) {
-                // Format: "records_processed:total_records" or just "done" if complete
                 let progress_str = progress_str.trim();
                 if progress_str == "done" {
                     println!(
@@ -3898,13 +4001,26 @@ async fn cmd_import(
                         style("✓").green()
                     );
                     file_fully_processed = true;
-                } else if let Some((processed, _total)) = progress_str.split_once(':') {
-                    if let Ok(n) = processed.parse::<usize>() {
-                        records_to_skip = n;
+                } else if let Some(error_msg) = progress_str.strip_prefix("error:") {
+                    println!(
+                        "  {} Previous attempt failed: {}",
+                        style("!").yellow(),
+                        error_msg
+                    );
+                    println!("  {} Retrying from start", style("→").cyan());
+                } else if let Some(offset_str) = progress_str.strip_prefix("offset:") {
+                    if is_gzip {
+                        // Can't seek in gzip, ignore offset and start over
                         println!(
-                            "  {} Resuming from record {}",
+                            "  {} Gzip file - cannot resume from offset, starting over",
+                            style("!").yellow()
+                        );
+                    } else if let Ok(offset) = offset_str.parse::<u64>() {
+                        resume_byte_offset = offset;
+                        println!(
+                            "  {} Resuming from byte offset {}",
                             style("→").cyan(),
-                            records_to_skip
+                            resume_byte_offset
                         );
                     }
                 }
@@ -3914,14 +4030,6 @@ async fn cmd_import(
         if file_fully_processed {
             continue;
         }
-
-        // Detect if gzipped
-        let is_gzip = warc_path
-            .extension()
-            .is_some_and(|ext| ext == "gz")
-            || warc_path
-                .to_string_lossy()
-                .contains(".warc.gz");
 
         // Progress bar
         let pb = ProgressBar::new_spinner();
@@ -3937,21 +4045,15 @@ async fn cmd_import(
         let mut file_filtered = 0;
         let mut file_no_source = 0;
         let mut file_completed = true; // Track if we processed entire file
-        let mut file_records_processed: usize = 0; // For resume support
+        let mut file_records_processed: usize = 0;
 
-        // Process based on compression - use macro to avoid code duplication
+        // Process WARC records - macro to avoid code duplication
+        // $position_tracker: Option<Arc<AtomicU64>> for byte offset tracking
+        // $can_checkpoint: bool - whether this file type supports checkpointing
         macro_rules! process_warc {
-            ($reader:expr) => {
+            ($reader:expr, $position_tracker:expr, $can_checkpoint:expr) => {
                 for record_result in $reader.iter_records() {
                     file_records_processed += 1;
-
-                    // Skip records we've already processed (resume support)
-                    if file_records_processed <= records_to_skip {
-                        if file_records_processed % 10000 == 0 {
-                            pb.set_message(format!("Skipping record {} / {}", file_records_processed, records_to_skip));
-                        }
-                        continue;
-                    }
 
                     // Check import limit
                     if limit > 0 && total_imported >= limit {
@@ -3969,9 +4071,14 @@ async fn cmd_import(
 
                     total_scanned += 1;
 
-                    // Write checkpoint at intervals when --resume is enabled
-                    if resume && checkpoint_interval > 0 && file_records_processed % checkpoint_interval == 0 {
-                        let _ = std::fs::write(&progress_path, format!("{}:0", file_records_processed));
+                    // Write checkpoint at intervals (uncompressed files only)
+                    if $can_checkpoint && resume && !dry_run && checkpoint_interval > 0
+                        && file_records_processed % checkpoint_interval == 0
+                    {
+                        if let Some(ref tracker) = $position_tracker {
+                            let offset = tracker.load(Ordering::Relaxed);
+                            let _ = std::fs::write(&progress_path, format!("offset:{}", offset));
+                        }
                     }
 
                     let record = match record_result {
@@ -4103,23 +4210,46 @@ async fn cmd_import(
         }
 
         // Open and process WARC file
+        // Track final position for checkpoint (uncompressed only)
+        let mut final_position: Option<u64> = None;
+
         if is_gzip {
+            // Gzip files: no seeking, no checkpointing
             match WarcReader::from_path_gzip(warc_path) {
-                Ok(reader) => process_warc!(reader),
+                Ok(reader) => process_warc!(reader, None::<Arc<AtomicU64>>, false),
                 Err(e) => {
                     println!("{} Failed to open WARC file: {}", style("✗").red(), e);
                     total_errors += 1;
-                    file_completed = false;
+                    if resume && !dry_run {
+                        let _ = std::fs::write(&progress_path, format!("error:{}", e));
+                    }
                     continue;
                 }
             }
         } else {
-            match WarcReader::from_path(warc_path) {
-                Ok(reader) => process_warc!(reader),
+            // Uncompressed files: seek support and byte-offset checkpointing
+            let file_result = (|| -> std::io::Result<_> {
+                let mut file = std::fs::File::open(warc_path)?;
+                if resume_byte_offset > 0 {
+                    file.seek(SeekFrom::Start(resume_byte_offset))?;
+                }
+                Ok(file)
+            })();
+
+            match file_result {
+                Ok(file) => {
+                    let tracking_reader = PositionTrackingReader::new(file, resume_byte_offset);
+                    let tracker = tracking_reader.position_handle();
+                    let reader = WarcReader::new(tracking_reader);
+                    process_warc!(reader, Some(tracker.clone()), true);
+                    final_position = Some(tracker.load(Ordering::Relaxed));
+                }
                 Err(e) => {
                     println!("{} Failed to open WARC file: {}", style("✗").red(), e);
                     total_errors += 1;
-                    file_completed = false;
+                    if resume && !dry_run {
+                        let _ = std::fs::write(&progress_path, format!("error:{}", e));
+                    }
                     continue;
                 }
             }
@@ -4138,12 +4268,18 @@ async fn cmd_import(
         // Write progress file when --resume is enabled
         if resume && !dry_run {
             let progress_content = if file_completed {
-                "done".to_string()
+                Some("done".to_string())
+            } else if let Some(offset) = final_position {
+                // Uncompressed file: save byte offset for true resume
+                Some(format!("offset:{}", offset))
             } else {
-                format!("{}:0", file_records_processed)
+                // Gzip file: can't resume mid-file, don't write checkpoint
+                None
             };
-            if let Err(e) = std::fs::write(&progress_path, progress_content) {
-                tracing::warn!("Failed to write progress file: {}", e);
+            if let Some(content) = progress_content {
+                if let Err(e) = std::fs::write(&progress_path, content) {
+                    tracing::warn!("Failed to write progress file: {}", e);
+                }
             }
         }
 
@@ -4617,6 +4753,107 @@ async fn cmd_discover(
         println!(
             "  Run {} to download discovered documents",
             style(format!("foiacquire download {}", source_id)).cyan()
+        );
+    }
+
+    Ok(())
+}
+
+/// Recover a skeleton config from an existing database.
+async fn cmd_config_recover(database: &Path, output: Option<&Path>) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    use crate::config::Config;
+    use crate::scrapers::ScraperConfig;
+
+    // Validate database exists
+    if !database.exists() {
+        anyhow::bail!("Database not found: {}", database.display());
+    }
+
+    // Derive target directory from database path
+    let target = database
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine parent directory of database"))?;
+
+    let database_filename = database
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Could not determine database filename"))?;
+
+    // Open database and query sources
+    let source_repo = SourceRepository::new(database)?;
+    let sources = source_repo.get_all()?;
+
+    if sources.is_empty() {
+        eprintln!(
+            "{} No sources found in database. Generating minimal config.",
+            style("!").yellow()
+        );
+    } else {
+        eprintln!(
+            "{} Found {} source(s) in database",
+            style("✓").green(),
+            sources.len()
+        );
+    }
+
+    // Build scraper configs from sources
+    let mut scrapers: HashMap<String, ScraperConfig> = HashMap::new();
+    for source in &sources {
+        let scraper_config = ScraperConfig {
+            name: Some(source.name.clone()),
+            base_url: Some(source.base_url.clone()),
+            ..Default::default()
+        };
+        scrapers.insert(source.id.clone(), scraper_config);
+
+        eprintln!(
+            "  {} {} ({})",
+            style("→").dim(),
+            source.id,
+            source.base_url
+        );
+    }
+
+    // Build the config
+    let config = Config {
+        target: Some(target.display().to_string()),
+        database: Some(database_filename.to_string()),
+        scrapers,
+        ..Default::default()
+    };
+
+    // Serialize to JSON
+    let json = serde_json::to_string_pretty(&config)?;
+
+    // Output - JSON to stdout (or file), status messages to stderr
+    match output {
+        Some(path) => {
+            let mut file = std::fs::File::create(path)?;
+            file.write_all(json.as_bytes())?;
+            file.write_all(b"\n")?;
+            eprintln!(
+                "\n{} Config written to {}",
+                style("✓").green(),
+                path.display()
+            );
+        }
+        None => {
+            println!("{}", json);
+        }
+    }
+
+    if !sources.is_empty() {
+        eprintln!();
+        eprintln!(
+            "{} This is a skeleton config. Discovery/fetch rules must be added manually.",
+            style("Note:").yellow().bold()
+        );
+        eprintln!(
+            "  See {} for examples.",
+            style("etc/example.json").cyan()
         );
     }
 

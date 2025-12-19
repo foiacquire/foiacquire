@@ -1309,6 +1309,25 @@ impl DocumentRepository {
         Ok(counts)
     }
 
+    /// Get document counts grouped by status in a single query (no N+1).
+    /// Returns a HashMap of status -> count.
+    pub fn count_all_by_status(&self) -> Result<std::collections::HashMap<String, u64>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare("SELECT status, COUNT(*) FROM documents GROUP BY status")?;
+
+        let mut counts = std::collections::HashMap::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        })?;
+
+        for row in rows {
+            let (status, count) = row?;
+            counts.insert(status, count);
+        }
+
+        Ok(counts)
+    }
+
     /// MIME types supported by the OCR extractor.
     const OCR_SUPPORTED_MIME_TYPES: &'static [&'static str] = &[
         "application/pdf",
@@ -3395,6 +3414,63 @@ impl DocumentRepository {
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(results)
+    }
+
+    /// Get OCR results for multiple pages in a single query (avoids N+1).
+    /// Returns a HashMap of page_id -> Vec<(backend, ocr_text, confidence, processing_time_ms)>.
+    pub fn get_pages_ocr_results_bulk(
+        &self,
+        page_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Vec<(String, Option<String>, Option<f64>, Option<i64>)>>>
+    {
+        if page_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let conn = self.connect()?;
+
+        // Build query with placeholders for all page IDs
+        let placeholders: String = page_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            r#"
+            SELECT page_id, backend, ocr_text, confidence, processing_time_ms
+            FROM page_ocr_results
+            WHERE page_id IN ({})
+            ORDER BY page_id, created_at DESC
+            "#,
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&query)?;
+
+        // Convert page_ids to params
+        let params: Vec<&dyn rusqlite::ToSql> =
+            page_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<f64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })?;
+
+        let mut results: std::collections::HashMap<
+            i64,
+            Vec<(String, Option<String>, Option<f64>, Option<i64>)>,
+        > = std::collections::HashMap::new();
+
+        for row in rows {
+            let (page_id, backend, ocr_text, confidence, processing_time_ms) = row?;
+            results
+                .entry(page_id)
+                .or_default()
+                .push((backend, ocr_text, confidence, processing_time_ms));
+        }
 
         Ok(results)
     }

@@ -1,16 +1,16 @@
 //! Configuration management for FOIAcquire using the prefer crate.
 
 use std::collections::HashMap;
-
-/// Default refresh TTL in days (14 days).
-pub const DEFAULT_REFRESH_TTL_DAYS: u64 = 14;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::llm::LlmConfig;
 use crate::scrapers::ScraperConfig;
+
+/// Default refresh TTL in days (14 days).
+pub const DEFAULT_REFRESH_TTL_DAYS: u64 = 14;
 
 /// Application settings.
 #[derive(Debug, Clone)]
@@ -36,8 +36,10 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         // Default to ~/Documents/foia/ for user data
+        // Falls back gracefully: Documents dir -> Home dir -> Current dir
         let data_dir = dirs::document_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
             .join("foia");
 
         Self {
@@ -80,42 +82,46 @@ impl Settings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Target directory for data.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// Database filename.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
     /// User agent string.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_agent: Option<String>,
     /// Request timeout in seconds.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout: Option<u64>,
     /// Delay between requests in milliseconds.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_delay_ms: Option<u64>,
     /// Rate limit backend URL.
     /// - None or "memory": In-memory (single process only)
     /// - "sqlite": Use local SQLite database (multi-process safe)
     /// - "redis://host:port": Use Redis (distributed)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit_backend: Option<String>,
     /// Worker queue broker URL.
     /// - None or "database": Use local SQLite database
     /// - "amqp://host:port": Use RabbitMQ
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker_url: Option<String>,
     /// Default refresh TTL in days for re-checking fetched URLs.
     /// Individual scrapers can override this with their own refresh_ttl_days.
     /// Defaults to 14 days if not set.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_refresh_ttl_days: Option<u64>,
     /// Scraper configurations.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub scrapers: HashMap<String, ScraperConfig>,
     /// LLM configuration for document summarization.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "LlmConfig::is_default")]
     pub llm: LlmConfig,
+
+    /// Path to the config file this was loaded from (not serialized).
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -139,6 +145,9 @@ impl Config {
                     pref_config.get("scrapers").await.unwrap_or_default();
                 let llm: LlmConfig = pref_config.get("llm").await.unwrap_or_default();
 
+                // Get the source path from prefer
+                let source_path = pref_config.source_path().cloned();
+
                 Config {
                     target,
                     database,
@@ -150,6 +159,7 @@ impl Config {
                     default_refresh_ttl_days,
                     scrapers,
                     llm,
+                    source_path,
                 }
             }
             Err(_) => {
@@ -159,11 +169,45 @@ impl Config {
         }
     }
 
+    /// Load configuration from a specific file path.
+    pub async fn load_from_path(path: &Path) -> Result<Self, String> {
+        let contents = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        let mut config: Config = serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+        config.source_path = Some(path.to_path_buf());
+        Ok(config)
+    }
+
+    /// Get the base directory for resolving relative paths.
+    /// Returns the config file's parent directory if available, otherwise None.
+    pub fn base_dir(&self) -> Option<PathBuf> {
+        self.source_path.as_ref().and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    }
+
+    /// Resolve a path that may be relative to the config file.
+    /// - Absolute paths are returned as-is
+    /// - Paths starting with ~ are expanded
+    /// - Relative paths are resolved relative to `base_dir` (config file location or CWD)
+    pub fn resolve_path(&self, path_str: &str, base_dir: &Path) -> PathBuf {
+        let expanded = shellexpand::tilde(path_str);
+        let path = Path::new(expanded.as_ref());
+
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base_dir.join(path)
+        }
+    }
+
     /// Apply configuration to settings.
-    pub fn apply_to_settings(&self, settings: &mut Settings) {
+    /// `base_dir` is used to resolve relative paths (typically config file dir or CWD).
+    pub fn apply_to_settings(&self, settings: &mut Settings, base_dir: &Path) {
         if let Some(ref target) = self.target {
-            let path = shellexpand::tilde(target);
-            settings.data_dir = PathBuf::from(path.as_ref());
+            settings.data_dir = self.resolve_path(target, base_dir);
             settings.documents_dir = settings.data_dir.join("documents");
         }
         if let Some(ref database) = self.database {
@@ -201,10 +245,44 @@ impl Config {
     }
 }
 
-/// Load settings from configuration (async version).
-pub async fn load_settings() -> Settings {
-    let config = Config::load().await;
+/// Options for loading settings.
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// Explicit config file path (overrides auto-discovery).
+    pub config_path: Option<PathBuf>,
+    /// Use CWD for relative paths instead of config file directory.
+    pub use_cwd: bool,
+    /// Override data directory (--data-dir flag).
+    pub data_dir: Option<PathBuf>,
+}
+
+/// Load settings with explicit options.
+pub async fn load_settings_with_options(options: LoadOptions) -> Settings {
+    // Load config from explicit path or auto-discover
+    let config = match &options.config_path {
+        Some(path) => Config::load_from_path(path).await.unwrap_or_default(),
+        None => Config::load().await,
+    };
+
     let mut settings = Settings::default();
-    config.apply_to_settings(&mut settings);
+
+    // Determine base directory for resolving relative paths
+    let base_dir = if options.use_cwd {
+        // --cwd flag: use current working directory
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        // Default: use config file's directory, fall back to CWD
+        config.base_dir().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        })
+    };
+
+    config.apply_to_settings(&mut settings, &base_dir);
+
+    // --data-dir override takes precedence
+    if let Some(data_dir) = options.data_dir {
+        settings = Settings::with_data_dir(data_dir);
+    }
+
     settings
 }

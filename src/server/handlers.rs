@@ -408,29 +408,33 @@ pub async fn api_document_pages(
     };
 
     let total_pages = all_pages.len() as u32;
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(5).min(20); // Cap at 20 pages per request
+    // Input validation: cap offset and limit to reasonable values
+    let offset = params.offset.unwrap_or(0).min(100_000);
+    let limit = params.limit.unwrap_or(5).clamp(1, 20); // Cap at 20 pages per request
 
-    // Slice the pages we need
-    let start = offset as usize;
-    let end = (offset + limit) as usize;
+    // Slice the pages we need (using saturating arithmetic to prevent overflow)
+    let start = (offset as usize).min(all_pages.len());
     let selected_pages: Vec<_> = all_pages
         .into_iter()
         .skip(start)
         .take(limit as usize)
         .collect();
 
-    // Build a map of page_id -> deepseek_text for comparison view
+    // Build a map of page_id -> deepseek_text for comparison view (bulk query - no N+1)
+    let page_ids: Vec<i64> = selected_pages.iter().map(|p| p.id).collect();
+    let all_ocr_results = state
+        .doc_repo
+        .get_pages_ocr_results_bulk(&page_ids)
+        .unwrap_or_default();
+
     let mut deepseek_map: std::collections::HashMap<i64, Option<String>> =
         std::collections::HashMap::new();
-    for page in &selected_pages {
-        if let Ok(ocr_results) = state.doc_repo.get_page_ocr_results(page.id) {
-            // Find DeepSeek result
-            for (backend, text, _, _) in ocr_results {
-                if backend == "deepseek" {
-                    deepseek_map.insert(page.id, text);
-                    break;
-                }
+    for (page_id, ocr_results) in all_ocr_results {
+        // Find DeepSeek result
+        for (backend, text, _, _) in ocr_results {
+            if backend == "deepseek" {
+                deepseek_map.insert(page_id, text);
+                break;
             }
         }
     }
@@ -497,7 +501,7 @@ pub async fn api_document_pages(
             .collect()
     };
 
-    let has_more = end < total_pages as usize;
+    let has_more = (start + limit as usize) < total_pages as usize;
 
     axum::Json(PagesResponse {
         pages: page_data_list,
@@ -517,6 +521,16 @@ fn render_pdf_page_to_base64(pdf_path: &std::path::Path, page_number: u32) -> Op
     // Create a temporary file for the output
     let temp_dir = std::env::temp_dir();
     let output_prefix = temp_dir.join(format!("foiacquire_page_{}", uuid::Uuid::new_v4()));
+    let output_path = output_prefix.with_extension("png");
+
+    // Ensure cleanup on all exit paths using a guard
+    struct CleanupGuard<'a>(&'a std::path::Path);
+    impl Drop for CleanupGuard<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+    let _cleanup = CleanupGuard(&output_path);
 
     // Use pdftoppm to render the page (150 DPI for web viewing)
     let status = Command::new("pdftoppm")
@@ -535,10 +549,7 @@ fn render_pdf_page_to_base64(pdf_path: &std::path::Path, page_number: u32) -> Op
         .status();
 
     if status.map(|s| s.success()).unwrap_or(false) {
-        let output_path = output_prefix.with_extension("png");
         if let Ok(image_data) = std::fs::read(&output_path) {
-            // Clean up temp file
-            let _ = std::fs::remove_file(&output_path);
             let base64_str = base64::engine::general_purpose::STANDARD.encode(&image_data);
             return Some(format!("data:image/png;base64,{}", base64_str));
         }
@@ -550,32 +561,44 @@ fn render_pdf_page_to_base64(pdf_path: &std::path::Path, page_number: u32) -> Op
 
 /// Serve a document file.
 pub async fn serve_file(State(state): State<AppState>, Path(path): Path<String>) -> Response {
-    let file_path = state.documents_dir.join(&path);
+    // Security: canonicalize documents_dir first, then validate the requested path
+    // This prevents path traversal attacks and avoids leaking file existence info
+    let canonical_docs_dir = match state.documents_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Server configuration error").into_response();
+        }
+    };
 
-    if !file_path.exists() {
+    // Reject paths with obvious traversal attempts before filesystem access
+    if path.contains("..") || path.starts_with('/') {
         return (StatusCode::NOT_FOUND, "File not found").into_response();
     }
 
-    // Security: ensure path is within documents_dir
-    match file_path.canonicalize() {
-        Ok(canonical) => {
-            if !canonical.starts_with(&state.documents_dir) {
-                return (StatusCode::FORBIDDEN, "Access denied").into_response();
-            }
-        }
+    let file_path = canonical_docs_dir.join(&path);
+
+    // Canonicalize and verify the path is within documents_dir
+    // This also checks existence - canonicalize fails if file doesn't exist
+    let canonical_file = match file_path.canonicalize() {
+        Ok(p) => p,
         Err(_) => {
             return (StatusCode::NOT_FOUND, "File not found").into_response();
         }
+    };
+
+    // Ensure the canonical path is within the documents directory
+    if !canonical_file.starts_with(&canonical_docs_dir) {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
     }
 
-    let content = match std::fs::read(&file_path) {
+    let content = match tokio::fs::read(&canonical_file).await {
         Ok(c) => c,
         Err(_) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response();
         }
     };
 
-    let mime = mime_guess::from_path(&file_path)
+    let mime = mime_guess::from_path(&canonical_file)
         .first_or_octet_stream()
         .to_string();
 
@@ -729,7 +752,9 @@ fn build_timeline_data(documents: &[crate::models::Document]) -> TimelineRespons
         .into_iter()
         .map(|(date, count)| {
             let timestamp = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp())
+                .ok()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| dt.and_utc().timestamp())
                 .unwrap_or(0);
             TimelineBucket {
                 date,
@@ -765,7 +790,9 @@ fn build_timeline_from_summaries(summaries: &[DocumentSummary]) -> TimelineRespo
         .into_iter()
         .map(|(date, count)| {
             let timestamp = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
-                .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp())
+                .ok()
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| dt.and_utc().timestamp())
                 .unwrap_or(0);
             TimelineBucket {
                 date,
@@ -1228,7 +1255,8 @@ pub async fn list_by_type(
     Path(type_name): Path<String>,
     Query(params): Query<TypeFilterParams>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(500);
+    // Input validation: cap limit to reasonable maximum
+    let limit = params.limit.unwrap_or(500).clamp(1, 1000);
     let source_id = params.source.as_deref();
 
     let documents = match state
@@ -1312,7 +1340,11 @@ pub async fn browse_documents(
     State(state): State<AppState>,
     Query(params): Query<BrowseParams>,
 ) -> impl IntoResponse {
-    let per_page = params.per_page.unwrap_or(50).min(200);
+    // Input validation: cap per_page between 1 and 200
+    let per_page = params.per_page.unwrap_or(50).clamp(1, 200);
+
+    // Input validation: page must be at least 1, cap at reasonable maximum
+    let page = params.page.unwrap_or(1).clamp(1, 100_000);
 
     // Parse types from comma-separated string
     let types: Vec<String> = params
@@ -1322,6 +1354,7 @@ pub async fn browse_documents(
             t.split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
+                .take(20) // Limit number of type filters
                 .collect()
         })
         .unwrap_or_default();
@@ -1334,12 +1367,10 @@ pub async fn browse_documents(
             t.split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
+                .take(50) // Limit number of tag filters
                 .collect()
         })
         .unwrap_or_default();
-
-    // Page-based pagination (1-indexed)
-    let page = params.page.unwrap_or(1);
 
     // Get count: O(1) for unfiltered queries via trigger-maintained table.
     // For filtered queries, use cache or skip count entirely (expensive COUNT DISTINCT).
@@ -1550,7 +1581,8 @@ pub async fn api_search_tags(
     Query(params): Query<TagSearchParams>,
 ) -> impl IntoResponse {
     let query = params.q.unwrap_or_default();
-    let limit = params.limit.unwrap_or(20);
+    // Input validation: cap limit to reasonable maximum
+    let limit = params.limit.unwrap_or(20).clamp(1, 200);
 
     match state.doc_repo.search_tags(&query, limit) {
         Ok(tags) => {

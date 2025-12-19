@@ -282,7 +282,7 @@ impl DownloadService {
 
                     let content_path = documents_dir.join(&content_hash[..2]).join(&filename);
 
-                    if let Err(e) = std::fs::create_dir_all(content_path.parent().unwrap()) {
+                    if let Err(e) = tokio::fs::create_dir_all(content_path.parent().unwrap()).await {
                         failed.fetch_add(1, Ordering::Relaxed);
                         let _ = event_tx
                             .send(DownloadEvent::Failed {
@@ -294,7 +294,7 @@ impl DownloadService {
                         continue;
                     }
 
-                    if let Err(e) = std::fs::write(&content_path, &content) {
+                    if let Err(e) = tokio::fs::write(&content_path, &content).await {
                         failed.fetch_add(1, Ordering::Relaxed);
                         let _ = event_tx
                             .send(DownloadEvent::Failed {
