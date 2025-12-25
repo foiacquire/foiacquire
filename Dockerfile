@@ -2,6 +2,7 @@
 FROM rust:alpine AS builder
 
 ARG FEATURES="browser"
+ARG TARGETARCH
 
 RUN apk add --no-cache musl-dev sqlite-dev openssl-dev openssl-libs-static pkgconfig
 
@@ -9,7 +10,12 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-RUN cargo build --release --features "$FEATURES"
+# Build with architecture-specific caching
+RUN --mount=type=cache,id=cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-git-${TARGETARCH},target=/usr/local/cargo/git \
+    --mount=type=cache,id=cargo-target-${TARGETARCH},target=/build/target \
+    cargo build --release --features "$FEATURES" && \
+    cp target/release/foiacquire /foiacquire
 
 # Runtime image
 FROM alpine:latest
@@ -30,7 +36,7 @@ RUN adduser -D foiacquire \
 WORKDIR /opt/foiacquire
 VOLUME /opt/foiacquire
 
-COPY --from=builder /build/target/release/foiacquire /usr/local/bin/foiacquire
+COPY --from=builder /foiacquire /usr/local/bin/foiacquire
 COPY --chmod=755 bin/foiacquire-entrypoint.sh /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
