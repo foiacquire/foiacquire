@@ -6,7 +6,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::{Config, Settings};
-use crate::repository::DocumentRepository;
+use crate::repository::DbContext;
 
 use super::helpers::truncate;
 use super::scrape::ReloadMode;
@@ -24,12 +24,12 @@ pub async fn cmd_annotate(
     interval: u64,
     reload: ReloadMode,
 ) -> anyhow::Result<()> {
-    use crate::repository::ConfigHistoryRepository;
     use crate::services::{AnnotationEvent, AnnotationService};
     use tokio::sync::mpsc;
 
     let db_path = settings.database_path();
-    let doc_repo = Arc::new(DocumentRepository::new(&db_path, &settings.documents_dir)?);
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let doc_repo = ctx.documents();
 
     // Set up config watcher for stop-process and inplace modes
     // Try file watching first, fall back to DB polling if no config file
@@ -62,6 +62,7 @@ pub async fn cmd_annotate(
 
     // Create initial service
     let mut service = AnnotationService::new(doc_repo.clone(), llm_config.clone());
+    let config_history = ctx.config_history();
 
     // Check if LLM service is available
     if !service.is_available().await {
@@ -125,7 +126,7 @@ pub async fn cmd_annotate(
         }
 
         // Check if there's work to do
-        let total_count = service.count_needing_annotation(source_id)?;
+        let total_count = service.count_needing_annotation(source_id).await?;
 
         if total_count == 0 {
             if daemon {
@@ -275,27 +276,25 @@ pub async fn cmd_annotate(
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
             // Check if config changed in DB
-            if let Ok(repo) = ConfigHistoryRepository::new(&db_path) {
-                if let Ok(Some(latest_hash)) = repo.get_latest_hash() {
-                    if latest_hash != current_config_hash {
-                        match reload {
-                            ReloadMode::StopProcess => {
-                                println!(
-                                    "{} Config changed in database, exiting for restart...",
-                                    style("↻").cyan()
-                                );
-                                return Ok(());
-                            }
-                            ReloadMode::Inplace => {
-                                println!(
-                                    "{} Config changed in database, reloading...",
-                                    style("↻").cyan()
-                                );
-                                current_config_hash = latest_hash;
-                                // Config will be reloaded at start of next iteration
-                            }
-                            ReloadMode::NextRun => {}
+            if let Ok(Some(latest_hash)) = config_history.get_latest_hash().await {
+                if latest_hash != current_config_hash {
+                    match reload {
+                        ReloadMode::StopProcess => {
+                            println!(
+                                "{} Config changed in database, exiting for restart...",
+                                style("↻").cyan()
+                            );
+                            return Ok(());
                         }
+                        ReloadMode::Inplace => {
+                            println!(
+                                "{} Config changed in database, reloading...",
+                                style("↻").cyan()
+                            );
+                            current_config_hash = latest_hash;
+                            // Config will be reloaded at start of next iteration
+                        }
+                        ReloadMode::NextRun => {}
                     }
                 }
             }
@@ -314,13 +313,15 @@ pub async fn cmd_detect_dates(
     limit: usize,
     dry_run: bool,
 ) -> anyhow::Result<()> {
+    use crate::repository::DbContext;
     use crate::services::date_detection::{detect_date, DateConfidence};
 
     let db_path = settings.database_path();
-    let doc_repo = DocumentRepository::new(&db_path, &settings.documents_dir)?;
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let doc_repo = ctx.documents();
 
     // Count documents needing date estimation
-    let total_count = doc_repo.count_documents_needing_date_estimation(source_id)?;
+    let total_count = doc_repo.count_documents_needing_date_estimation(source_id).await?;
 
     if total_count == 0 {
         println!("{} No documents need date estimation", style("!").yellow());
@@ -349,7 +350,7 @@ pub async fn cmd_detect_dates(
     }
 
     // Fetch documents needing estimation
-    let documents = doc_repo.get_documents_needing_date_estimation(source_id, effective_limit)?;
+    let documents = doc_repo.get_documents_needing_date_estimation(source_id, effective_limit).await?;
 
     let pb = ProgressBar::new(documents.len() as u64);
     pb.set_style(
@@ -398,7 +399,7 @@ pub async fn cmd_detect_dates(
                     est.date,
                     est.confidence.as_str(),
                     est.source.as_str(),
-                )?;
+                ).await?;
                 // Record that we processed this document
                 doc_repo.record_annotation(
                     &doc_id,
@@ -406,13 +407,13 @@ pub async fn cmd_detect_dates(
                     1,
                     Some(&format!("detected:{}", est.source.as_str())),
                     None,
-                )?;
+                ).await?;
             }
         } else {
             no_date += 1;
             if !dry_run {
                 // Record that we tried but found no date
-                doc_repo.record_annotation(&doc_id, "date_detection", 1, Some("no_date"), None)?;
+                doc_repo.record_annotation(&doc_id, "date_detection", 1, Some("no_date"), None).await?;
             }
         }
 

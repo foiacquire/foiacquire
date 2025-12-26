@@ -56,9 +56,9 @@ pub async fn browse_documents(
 
     let (cached_total, skip_count) = if types.is_empty() && tags.is_empty() && params.q.is_none() {
         let count = if let Some(source_id) = params.source.as_deref() {
-            state.doc_repo.count_by_source(source_id).ok()
+            state.doc_repo.count_by_source(source_id).await.ok()
         } else {
-            state.doc_repo.count().ok()
+            state.doc_repo.count().await.ok()
         };
         (count, false)
     } else {
@@ -72,96 +72,60 @@ pub async fn browse_documents(
         (cached, cached.is_none())
     };
 
-    let state_browse = state.clone();
-    let types_browse = types.clone();
-    let tags_browse = tags.clone();
-    let source_browse = params.source.clone();
-    let q_browse = params.q.clone();
-
     let effective_total = if skip_count { Some(0) } else { cached_total };
 
-    let browse_handle = tokio::task::spawn_blocking(move || {
-        state_browse.doc_repo.browse(
-            &types_browse,
-            &tags_browse,
-            source_browse.as_deref(),
-            q_browse.as_deref(),
+    let has_filters = !types.is_empty() || !tags.is_empty() || params.q.is_some();
+
+    // Run browse query
+    let browse_result = match state
+        .doc_repo
+        .browse(
+            &types,
+            &tags,
+            params.source.as_deref(),
+            params.q.as_deref(),
             page,
             per_page,
             effective_total,
         )
-    });
-
-    let has_filters = !types.is_empty() || !tags.is_empty() || params.q.is_some();
-
-    let state_types = state.clone();
-    let type_stats_handle = tokio::task::spawn_blocking(move || {
-        state_types
-            .doc_repo
-            .get_category_stats(None)
-            .unwrap_or_default()
-    });
-
-    let (tags_handle, sources_handle) = if has_filters {
-        (None, None)
-    } else {
-        let state_tags = state.clone();
-        let tags_handle = Some(tokio::task::spawn_blocking(move || {
-            state_tags.doc_repo.get_all_tags().unwrap_or_default()
-        }));
-
-        let state_sources = state.clone();
-        let sources_handle = Some(tokio::task::spawn_blocking(move || {
-            let counts = state_sources
-                .doc_repo
-                .get_all_source_counts()
-                .unwrap_or_default();
-            let sources = state_sources.source_repo.get_all().unwrap_or_default();
-            sources
-                .into_iter()
-                .map(|s| {
-                    let count = counts.get(&s.id).copied().unwrap_or(0);
-                    (s.id, s.name, count)
-                })
-                .collect::<Vec<_>>()
-        }));
-
-        (tags_handle, sources_handle)
-    };
-
-    let browse_res = browse_handle.await;
-    let type_stats_res = type_stats_handle.await;
-
-    let tags_res = match tags_handle {
-        Some(h) => Some(h.await),
-        None => None,
-    };
-    let sources_res = match sources_handle {
-        Some(h) => Some(h.await),
-        None => None,
-    };
-
-    let browse_result = match browse_res {
-        Ok(Ok(result)) => result,
-        Ok(Err(e)) => {
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
             return Html(templates::base_template(
                 "Error",
                 &format!("<p>Failed to load documents: {}</p>", e),
                 None,
             ));
         }
-        Err(e) => {
-            return Html(templates::base_template(
-                "Error",
-                &format!("<p>Task failed: {}</p>", e),
-                None,
-            ));
-        }
+    };
+
+    // Get type stats
+    let type_stats: Vec<(String, u64)> = state
+        .doc_repo
+        .get_category_stats(None)
+        .await
+        .unwrap_or_default();
+
+    // Get tags and sources if no filters are active
+    let (all_tags, sources) = if has_filters {
+        (Vec::new(), Vec::new())
+    } else {
+        let tags_result = state.doc_repo.get_all_tags().await.unwrap_or_default();
+        let counts = state.doc_repo.get_all_source_counts().await.unwrap_or_default();
+        let source_list = state.source_repo.get_all().await.unwrap_or_default();
+        let sources_result: Vec<_> = source_list
+            .into_iter()
+            .map(|s| {
+                let count = counts.get(&s.id).copied().unwrap_or(0);
+                (s.id, s.name, count)
+            })
+            .collect();
+        (tags_result, sources_result)
     };
 
     if skip_count {
         let state_for_count = state.clone();
-        let state_for_cache = state.clone();
         let types_bg = types.clone();
         let tags_bg = tags.clone();
         let source_bg = params.source.clone();
@@ -175,26 +139,17 @@ pub async fn browse_documents(
         );
 
         tokio::spawn(async move {
-            if let Ok(Ok(count)) = tokio::task::spawn_blocking(move || {
-                state_for_count.doc_repo.browse_count(
-                    &types_bg,
-                    &tags_bg,
-                    source_bg.as_deref(),
-                    q_bg.as_deref(),
-                )
-            })
-            .await
+            if let Ok(count) = state_for_count
+                .doc_repo
+                .browse_count(&types_bg, &tags_bg, source_bg.as_deref(), q_bg.as_deref())
+                .await
             {
-                state_for_cache
+                state_for_count
                     .stats_cache
                     .set_browse_count(cache_key, count);
             }
         });
     }
-
-    let type_stats: Vec<(String, u64)> = type_stats_res.unwrap_or_else(|_| Vec::new());
-    let all_tags: Vec<(String, usize)> = tags_res.and_then(|r| r.ok()).unwrap_or_default();
-    let sources: Vec<(String, String, u64)> = sources_res.and_then(|r| r.ok()).unwrap_or_default();
 
     let timeline = build_timeline_data(&browse_result.documents);
     let timeline_json = serde_json::to_string(&timeline).unwrap_or_else(|_| "{}".to_string());

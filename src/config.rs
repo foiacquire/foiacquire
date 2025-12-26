@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::llm::LlmConfig;
-use crate::repository::ConfigHistoryRepository;
+use crate::repository::{create_pool, AsyncConfigHistoryRepository};
 use crate::scrapers::ScraperConfig;
 
 /// Default refresh TTL in days (14 days).
@@ -300,9 +300,10 @@ impl Config {
     }
 
     /// Load configuration from database history.
-    pub fn load_from_db(db_path: &Path) -> Option<Self> {
-        let repo = ConfigHistoryRepository::new(db_path).ok()?;
-        let entry = repo.get_latest().ok()??;
+    pub async fn load_from_db(db_path: &Path) -> Option<Self> {
+        let pool = create_pool(db_path).await.ok()?;
+        let repo = AsyncConfigHistoryRepository::new(pool);
+        let entry = repo.get_latest().await.ok()??;
 
         match entry.format.to_lowercase().as_str() {
             "json" => serde_json::from_str(&entry.data).ok(),
@@ -313,14 +314,15 @@ impl Config {
 
     /// Save configuration to database history if it has changed.
     /// Returns true if saved, false if unchanged, or logs warning on error.
-    pub fn save_to_db_if_changed(&self, db_path: &Path, target_dir: &Path) {
+    pub async fn save_to_db_if_changed(&self, db_path: &Path, target_dir: &Path) {
         let hash = self.hash();
         let data = self.to_json_relative(target_dir);
         let format = "json";
 
-        match ConfigHistoryRepository::new(db_path) {
-            Ok(repo) => {
-                match repo.insert_if_new(&data, format, &hash) {
+        match create_pool(db_path).await {
+            Ok(pool) => {
+                let repo = AsyncConfigHistoryRepository::new(pool);
+                match repo.insert_if_new(&data, format, &hash).await {
                     Ok(true) => {
                         tracing::debug!("Saved new config to history");
                     }
@@ -466,7 +468,7 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
                 "No config file found, trying database history: {}",
                 resolved.database_path.display()
             );
-            Config::load_from_db(&resolved.database_path).unwrap_or_else(|| {
+            Config::load_from_db(&resolved.database_path).await.unwrap_or_else(|| {
                 tracing::debug!("No config in database history, using defaults");
                 Config::default()
             })
@@ -502,7 +504,7 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
     // Save config to database history if database exists
     let db_path = settings.database_path();
     if db_path.exists() {
-        config.save_to_db_if_changed(&db_path, &settings.data_dir);
+        config.save_to_db_if_changed(&db_path, &settings.data_dir).await;
     }
 
     (settings, config)

@@ -11,7 +11,7 @@ use crate::models::DocumentDisplay;
 
 /// List all tags with document counts.
 pub async fn list_tags(State(state): State<AppState>) -> impl IntoResponse {
-    let tags = match state.doc_repo.get_all_tags() {
+    let tags = match state.doc_repo.get_all_tags().await {
         Ok(t) => t,
         Err(e) => {
             return Html(templates::base_template(
@@ -35,7 +35,7 @@ pub async fn list_tag_documents(
         .unwrap_or(std::borrow::Cow::Borrowed(&tag))
         .to_string();
 
-    let documents = match state.doc_repo.get_by_tag(&tag, None) {
+    let documents = match state.doc_repo.get_by_tag(&tag, None).await {
         Ok(docs) => docs,
         Err(e) => {
             return Html(templates::base_template(
@@ -61,11 +61,14 @@ pub async fn list_tag_documents(
 
 /// API endpoint to get all tags as JSON.
 pub async fn api_tags(State(state): State<AppState>) -> impl IntoResponse {
-    let tags = state.stats_cache.get_all_tags().unwrap_or_else(|| {
-        let tags = state.doc_repo.get_all_tags().unwrap_or_default();
-        state.stats_cache.set_all_tags(tags.clone());
-        tags
-    });
+    let tags = match state.stats_cache.get_all_tags() {
+        Some(cached) => cached,
+        None => {
+            let tags = state.doc_repo.get_all_tags().await.unwrap_or_default();
+            state.stats_cache.set_all_tags(tags.clone());
+            tags
+        }
+    };
 
     let tags_json: Vec<_> = tags
         .into_iter()

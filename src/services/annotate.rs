@@ -3,13 +3,11 @@
 //! Handles document annotation using LLM (generates synopsis and tags).
 //! Separated from UI concerns - emits events for progress tracking.
 
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 
 use crate::llm::{LlmClient, LlmConfig};
 use crate::models::DocumentStatus;
-use crate::repository::DocumentRepository;
+use crate::repository::AsyncDocumentRepository;
 
 /// Events emitted during annotation processing.
 #[derive(Debug, Clone)]
@@ -45,13 +43,13 @@ pub struct AnnotationResult {
 
 /// Service for annotating documents with LLM.
 pub struct AnnotationService {
-    doc_repo: Arc<DocumentRepository>,
+    doc_repo: AsyncDocumentRepository,
     llm_client: LlmClient,
 }
 
 impl AnnotationService {
     /// Create a new annotation service.
-    pub fn new(doc_repo: Arc<DocumentRepository>, llm_config: LlmConfig) -> Self {
+    pub fn new(doc_repo: AsyncDocumentRepository, llm_config: LlmConfig) -> Self {
         let llm_client = LlmClient::new(llm_config);
         Self {
             doc_repo,
@@ -65,8 +63,8 @@ impl AnnotationService {
     }
 
     /// Get count of documents needing annotation.
-    pub fn count_needing_annotation(&self, source_id: Option<&str>) -> anyhow::Result<u64> {
-        Ok(self.doc_repo.count_needing_summarization(source_id)?)
+    pub async fn count_needing_annotation(&self, source_id: Option<&str>) -> anyhow::Result<u64> {
+        Ok(self.doc_repo.count_needing_summarization(source_id).await?)
     }
 
     /// Annotate documents.
@@ -76,7 +74,7 @@ impl AnnotationService {
         limit: usize,
         event_tx: mpsc::Sender<AnnotationEvent>,
     ) -> anyhow::Result<AnnotationResult> {
-        let total_count = self.doc_repo.count_needing_summarization(source_id)?;
+        let total_count = self.doc_repo.count_needing_summarization(source_id).await?;
 
         if total_count == 0 {
             let _ = event_tx
@@ -117,7 +115,8 @@ impl AnnotationService {
             let batch_limit = (effective_limit - processed).min(10);
             let docs = self
                 .doc_repo
-                .get_needing_summarization(source_id, batch_limit)?;
+                .get_needing_summarization(source_id, batch_limit)
+                .await?;
 
             if docs.is_empty() {
                 break;
@@ -150,7 +149,11 @@ impl AnnotationService {
                     }
                 };
 
-                let text = match self.doc_repo.get_combined_page_text(&doc.id, version_id) {
+                let text = match self
+                    .doc_repo
+                    .get_combined_page_text(&doc.id, version_id)
+                    .await
+                {
                     Ok(Some(t)) if !t.is_empty() => t,
                     _ => {
                         let _ = event_tx
@@ -174,7 +177,7 @@ impl AnnotationService {
                         updated_doc.status = DocumentStatus::Indexed;
                         updated_doc.updated_at = chrono::Utc::now();
 
-                        if let Err(e) = self.doc_repo.save(&updated_doc) {
+                        if let Err(e) = self.doc_repo.save(&updated_doc).await {
                             let _ = event_tx
                                 .send(AnnotationEvent::DocumentFailed {
                                     document_id: doc.id.clone(),
@@ -206,7 +209,7 @@ impl AnnotationService {
             }
         }
 
-        let remaining = self.doc_repo.count_needing_summarization(source_id)?;
+        let remaining = self.doc_repo.count_needing_summarization(source_id).await?;
 
         let _ = event_tx
             .send(AnnotationEvent::Complete {
@@ -233,7 +236,8 @@ impl AnnotationService {
         // Get the document
         let doc = self
             .doc_repo
-            .get(doc_id)?
+            .get(doc_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
 
         let _ = event_tx
@@ -262,7 +266,11 @@ impl AnnotationService {
         };
 
         // Get combined text from pages
-        let text = match self.doc_repo.get_combined_page_text(doc_id, version_id) {
+        let text = match self
+            .doc_repo
+            .get_combined_page_text(doc_id, version_id)
+            .await
+        {
             Ok(Some(t)) if !t.is_empty() => t,
             _ => {
                 println!(
@@ -294,7 +302,7 @@ impl AnnotationService {
                 updated_doc.status = DocumentStatus::Indexed;
                 updated_doc.updated_at = chrono::Utc::now();
 
-                self.doc_repo.save(&updated_doc)?;
+                self.doc_repo.save(&updated_doc).await?;
 
                 println!(
                     "  {} Synopsis: {}",

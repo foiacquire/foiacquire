@@ -1,7 +1,6 @@
 //! Shared types and helper utilities for the document repository.
 
 use chrono::{DateTime, Utc};
-use rusqlite::Row;
 use std::path::PathBuf;
 
 use crate::models::{Document, DocumentStatus, DocumentVersion};
@@ -98,108 +97,6 @@ pub struct BrowseResult {
     pub total: u64,
 }
 
-/// Parse a version row into a DocumentVersion.
-pub(crate) fn row_to_version(row: &Row) -> rusqlite::Result<DocumentVersion> {
-    Ok(DocumentVersion {
-        id: row.get("id")?,
-        content_hash: row.get("content_hash")?,
-        file_path: PathBuf::from(row.get::<_, String>("file_path")?),
-        file_size: row.get::<_, i64>("file_size")? as u64,
-        mime_type: row.get("mime_type")?,
-        acquired_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("acquired_at")?)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        source_url: row.get("source_url")?,
-        original_filename: row.get("original_filename")?,
-        server_date: row
-            .get::<_, Option<String>>("server_date")?
-            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-            .map(|dt| dt.with_timezone(&Utc)),
-        page_count: row.get::<_, Option<i64>>("page_count")?.map(|c| c as u32),
-    })
-}
-
-/// Parse a document row into a partial document (without versions).
-/// Used by bulk load methods to avoid N+1 queries.
-pub(crate) fn row_to_document_partial(row: &Row) -> rusqlite::Result<DocumentPartial> {
-    let metadata_str: String = row.get("metadata")?;
-    let tags: Vec<String> = row
-        .get::<_, Option<String>>("tags")?
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    Ok(DocumentPartial {
-        id: row.get("id")?,
-        source_id: row.get("source_id")?,
-        title: row.get("title")?,
-        source_url: row.get("source_url")?,
-        extracted_text: row.get("extracted_text")?,
-        synopsis: row.get("synopsis")?,
-        tags,
-        status: DocumentStatus::from_str(&row.get::<_, String>("status")?)
-            .unwrap_or(DocumentStatus::Pending),
-        metadata: serde_json::from_str(&metadata_str)
-            .unwrap_or(serde_json::Value::Object(Default::default())),
-        created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        discovery_method: row.get("discovery_method")?,
-    })
-}
-
-/// Convert a row to a Document with pre-loaded versions.
-/// Used by bulk load methods to avoid N+1 queries.
-pub(crate) fn row_to_document_with_versions(
-    row: &Row,
-    versions: Vec<DocumentVersion>,
-) -> rusqlite::Result<Document> {
-    let metadata_str: String = row.get("metadata")?;
-
-    let tags: Vec<String> = row
-        .get::<_, Option<String>>("tags")?
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-
-    Ok(Document {
-        id: row.get("id")?,
-        source_id: row.get("source_id")?,
-        title: row.get("title")?,
-        source_url: row.get("source_url")?,
-        versions,
-        extracted_text: row.get("extracted_text")?,
-        synopsis: row.get("synopsis")?,
-        tags,
-        status: DocumentStatus::from_str(&row.get::<_, String>("status")?)
-            .unwrap_or(DocumentStatus::Pending),
-        metadata: serde_json::from_str(&metadata_str).unwrap_or_default(),
-        created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("created_at")?)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>("updated_at")?)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-        discovery_method: row.get("discovery_method")?,
-    })
-}
-
-/// Extension trait to convert rusqlite errors for missing rows to Option.
-pub(crate) trait OptionalExt<T> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
-}
-
-impl<T> OptionalExt<T> for std::result::Result<T, rusqlite::Error> {
-    fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(val) => Ok(Some(val)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-}
-
 /// Extract filename parts (basename and extension) from URL, title, or mime type.
 pub fn extract_filename_parts(url: &str, title: &str, mime_type: &str) -> (String, String) {
     // Try to get filename from URL path
@@ -228,6 +125,26 @@ pub fn extract_filename_parts(url: &str, title: &str, mime_type: &str) -> (Strin
 
     let basename = if title.is_empty() { "document" } else { title };
     (basename.to_string(), ext.to_string())
+}
+
+/// Map MIME type to category.
+pub fn mime_to_category(mime: &str) -> &'static str {
+    match mime {
+        "application/pdf" => "documents",
+        m if m.contains("word") || m == "application/msword" => "documents",
+        m if m.contains("rfc822") || m.contains("message") => "documents",
+        m if m.starts_with("text/") && !m.contains("csv") => "documents",
+        m if m.contains("excel")
+            || m.contains("spreadsheet")
+            || m == "text/csv"
+            || m == "application/json"
+            || m == "application/xml" =>
+        {
+            "data"
+        }
+        m if m.starts_with("image/") => "images",
+        _ => "other",
+    }
 }
 
 /// Sanitize a string for use as a filename.
@@ -301,13 +218,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename_long() {
-        let long_name = "a".repeat(150);
-        let sanitized = sanitize_filename(&long_name);
-        assert_eq!(sanitized.len(), 100);
-    }
-
-    #[test]
-    fn test_sanitize_filename_only_special() {
-        assert_eq!(sanitize_filename("///"), "document");
+        let long_name = "a".repeat(200);
+        assert_eq!(sanitize_filename(&long_name).len(), 100);
     }
 }

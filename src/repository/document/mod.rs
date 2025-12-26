@@ -1,38 +1,17 @@
 //! Document repository for SQLite persistence.
 //!
-//! This module is split into submodules for maintainability:
-//! - `schema`: Database schema initialization and migrations
-//! - `crud`: Basic create, read, update, delete operations
-//! - `query`: Complex queries, browsing, search
-//! - `stats`: Counting and statistics
-//! - `pages`: Document page and OCR operations
-//! - `virtual_files`: Archive/email virtual file handling
-//! - `annotations`: Document annotation tracking
-//! - `dates`: Date estimation and management
-//! - `helpers`: Shared parsing and query building utilities
-//!
-//! This module contains both sync (rusqlite) and async (sqlx) implementations.
+//! This module provides async database access for document operations using sqlx.
 
 #![allow(dead_code)]
 
-mod annotations;
-mod crud;
-mod dates;
 mod helpers;
-mod pages;
-mod query;
-mod schema;
-mod stats;
-mod virtual_files;
 
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
-
-use super::Result;
+use super::{parse_datetime, parse_datetime_opt, Result};
 use crate::models::{Document, DocumentStatus, DocumentVersion, VirtualFile};
 
 // Re-export public types
@@ -40,46 +19,6 @@ pub use helpers::{
     extract_filename_parts, sanitize_filename, BrowseResult, DocumentNavigation, DocumentSummary,
     VersionSummary,
 };
-
-/// Current storage format version. Increment when changing file naming scheme.
-pub(crate) const STORAGE_FORMAT_VERSION: i32 = 13;
-
-/// SQLite-backed document repository.
-pub struct DocumentRepository {
-    pub(crate) db_path: PathBuf,
-    pub(crate) documents_dir: PathBuf,
-}
-
-impl DocumentRepository {
-    /// Create a new document repository.
-    pub fn new(db_path: &Path, documents_dir: &Path) -> Result<Self> {
-        let repo = Self {
-            db_path: db_path.to_path_buf(),
-            documents_dir: documents_dir.to_path_buf(),
-        };
-        repo.init_schema()?;
-        repo.migrate_storage()?;
-        Ok(repo)
-    }
-
-    pub(crate) fn connect(&self) -> Result<Connection> {
-        super::connect(&self.db_path)
-    }
-
-    /// Get the documents directory path.
-    pub fn documents_dir(&self) -> &Path {
-        &self.documents_dir
-    }
-
-    /// Get the database path.
-    pub fn database_path(&self) -> &Path {
-        &self.db_path
-    }
-}
-
-// ============================================================================
-// ASYNC (sqlx) implementation - for new code and gradual migration
-// ============================================================================
 
 use helpers::DocumentPartial;
 
@@ -118,12 +57,8 @@ impl DocumentRow {
             status: DocumentStatus::from_str(&self.status).unwrap_or(DocumentStatus::Pending),
             metadata: serde_json::from_str(&self.metadata)
                 .unwrap_or(serde_json::Value::Object(Default::default())),
-            created_at: DateTime::parse_from_rfc3339(&self.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&self.updated_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            created_at: parse_datetime(&self.created_at),
+            updated_at: parse_datetime(&self.updated_at),
             discovery_method: self.discovery_method,
         }
     }
@@ -154,16 +89,53 @@ impl From<VersionRow> for DocumentVersion {
             file_path: PathBuf::from(row.file_path),
             file_size: row.file_size as u64,
             mime_type: row.mime_type,
-            acquired_at: DateTime::parse_from_rfc3339(&row.acquired_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            acquired_at: parse_datetime(&row.acquired_at),
             source_url: row.source_url,
             original_filename: row.original_filename,
-            server_date: row
-                .server_date
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .map(|dt| dt.with_timezone(&Utc)),
+            server_date: parse_datetime_opt(row.server_date),
             page_count: row.page_count.map(|c| c as u32),
+        }
+    }
+}
+
+/// Row type for VirtualFile SQLx query mapping.
+#[derive(sqlx::FromRow)]
+struct VirtualFileRow {
+    id: String,
+    document_id: String,
+    version_id: i64,
+    archive_path: String,
+    filename: String,
+    file_size: i64,
+    mime_type: String,
+    extracted_text: Option<String>,
+    synopsis: Option<String>,
+    tags: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<VirtualFileRow> for VirtualFile {
+    fn from(row: VirtualFileRow) -> Self {
+        use crate::models::VirtualFileStatus;
+        VirtualFile {
+            id: row.id,
+            document_id: row.document_id,
+            version_id: row.version_id,
+            archive_path: row.archive_path,
+            filename: row.filename,
+            file_size: row.file_size as u64,
+            mime_type: row.mime_type,
+            extracted_text: row.extracted_text,
+            synopsis: row.synopsis,
+            tags: row
+                .tags
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            status: VirtualFileStatus::from_str(&row.status).unwrap_or(VirtualFileStatus::Pending),
+            created_at: parse_datetime(&row.created_at),
+            updated_at: parse_datetime(&row.updated_at),
         }
     }
 }
@@ -1091,5 +1063,1429 @@ impl AsyncDocumentRepository {
             .collect();
 
         Ok(docs)
+    }
+
+    // ========================================================================
+    // Annotation tracking
+    // ========================================================================
+
+    /// Record that an annotation was completed for a document.
+    pub async fn record_annotation(
+        &self,
+        document_id: &str,
+        annotation_type: &str,
+        version: i32,
+        result: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        sqlx::query(
+            r#"INSERT INTO document_annotations (document_id, annotation_type, completed_at, version, result, error)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               ON CONFLICT(document_id, annotation_type) DO UPDATE SET
+                   completed_at = excluded.completed_at,
+                   version = excluded.version,
+                   result = excluded.result,
+                   error = excluded.error"#
+        )
+        .bind(document_id)
+        .bind(annotation_type)
+        .bind(&now)
+        .bind(version)
+        .bind(result)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Check if a specific annotation type has been completed for a document.
+    pub async fn has_annotation(&self, document_id: &str, annotation_type: &str) -> Result<bool> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM document_annotations WHERE document_id = ? AND annotation_type = ?"
+        )
+        .bind(document_id)
+        .bind(annotation_type)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count.0 > 0)
+    }
+
+    /// Get documents missing a specific annotation type.
+    pub async fn get_documents_missing_annotation(
+        &self,
+        annotation_type: &str,
+        source_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let base_query = r#"
+            SELECT d.id FROM documents d
+            WHERE NOT EXISTS (
+                SELECT 1 FROM document_annotations da
+                WHERE da.document_id = d.id AND da.annotation_type = ?
+            )
+        "#;
+
+        let ids: Vec<(String,)> = match source_id {
+            Some(sid) => {
+                let sql = format!("{} AND d.source_id = ? LIMIT ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(annotation_type)
+                    .bind(sid)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                let sql = format!("{} LIMIT ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(annotation_type)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+
+        Ok(ids.into_iter().map(|(id,)| id).collect())
+    }
+
+    // ========================================================================
+    // Date estimation
+    // ========================================================================
+
+    /// Count documents needing date estimation.
+    pub async fn count_documents_needing_date_estimation(
+        &self,
+        source_id: Option<&str>,
+    ) -> Result<u64> {
+        let base_query = r#"
+            SELECT COUNT(*) FROM documents d
+            JOIN document_versions dv ON d.id = dv.document_id
+            WHERE d.estimated_date IS NULL
+              AND d.manual_date IS NULL
+              AND dv.id = (SELECT MAX(dv2.id) FROM document_versions dv2 WHERE dv2.document_id = d.id)
+              AND NOT EXISTS (
+                  SELECT 1 FROM document_annotations da
+                  WHERE da.document_id = d.id AND da.annotation_type = 'date_detection'
+              )
+        "#;
+
+        let count: (i64,) = match source_id {
+            Some(sid) => {
+                let sql = format!("{} AND d.source_id = ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(sid)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_as(base_query)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+        };
+
+        Ok(count.0 as u64)
+    }
+
+    /// Get documents that need date estimation.
+    /// Returns (doc_id, filename, server_date, acquired_at, source_url).
+    #[allow(clippy::type_complexity)]
+    pub async fn get_documents_needing_date_estimation(
+        &self,
+        source_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, Option<String>, Option<DateTime<Utc>>, DateTime<Utc>, Option<String>)>>
+    {
+        #[derive(sqlx::FromRow)]
+        struct DateEstRow {
+            id: String,
+            original_filename: Option<String>,
+            server_date: Option<String>,
+            acquired_at: String,
+            source_url: Option<String>,
+        }
+
+        let base_query = r#"
+            SELECT d.id, dv.original_filename, dv.server_date, dv.acquired_at, d.source_url
+            FROM documents d
+            JOIN document_versions dv ON d.id = dv.document_id
+            WHERE d.estimated_date IS NULL
+              AND d.manual_date IS NULL
+              AND dv.id = (SELECT MAX(dv2.id) FROM document_versions dv2 WHERE dv2.document_id = d.id)
+              AND NOT EXISTS (
+                  SELECT 1 FROM document_annotations da
+                  WHERE da.document_id = d.id AND da.annotation_type = 'date_detection'
+              )
+        "#;
+
+        let rows: Vec<DateEstRow> = match source_id {
+            Some(sid) => {
+                let sql = format!("{} AND d.source_id = ? LIMIT ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(sid)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                let sql = format!("{} LIMIT ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+
+        let results = rows
+            .into_iter()
+            .map(|row| {
+                let server_dt = parse_datetime_opt(row.server_date);
+                let acquired_dt = parse_datetime(&row.acquired_at);
+
+                (row.id, row.original_filename, server_dt, acquired_dt, row.source_url)
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Update estimated date for a document.
+    pub async fn update_estimated_date(
+        &self,
+        document_id: &str,
+        estimated_date: DateTime<Utc>,
+        confidence: &str,
+        source: &str,
+    ) -> Result<()> {
+        let estimated_date_str = estimated_date.to_rfc3339();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "UPDATE documents SET estimated_date = ?, date_confidence = ?, date_source = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(&estimated_date_str)
+        .bind(confidence)
+        .bind(source)
+        .bind(&now)
+        .bind(document_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Statistics
+    // ========================================================================
+
+    /// Get document counts grouped by status.
+    pub async fn count_all_by_status(&self) -> Result<HashMap<String, u64>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT status, COUNT(*) FROM documents GROUP BY status"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut counts = HashMap::new();
+        for (status, count) in rows {
+            counts.insert(status, count as u64);
+        }
+
+        Ok(counts)
+    }
+
+    /// Count documents needing OCR.
+    pub async fn count_needing_ocr(&self, source_id: Option<&str>) -> Result<u64> {
+        let base_query = r#"
+            SELECT COUNT(DISTINCT d.id) FROM documents d
+            JOIN document_versions dv ON dv.document_id = d.id
+            WHERE d.status = 'downloaded'
+              AND dv.mime_type IN ('application/pdf', 'image/png', 'image/jpeg', 'image/tiff', 'image/gif', 'image/bmp', 'text/plain', 'text/html')
+        "#;
+
+        let count: (i64,) = match source_id {
+            Some(sid) => {
+                let sql = format!("{} AND d.source_id = ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(sid)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_as(base_query)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+        };
+
+        Ok(count.0 as u64)
+    }
+
+    /// Count documents needing LLM summarization.
+    pub async fn count_needing_summarization(&self, source_id: Option<&str>) -> Result<u64> {
+        let base_query = r#"
+            SELECT COUNT(DISTINCT d.id) FROM documents d
+            JOIN document_pages dp ON dp.document_id = d.id
+            WHERE d.synopsis IS NULL
+              AND dp.final_text IS NOT NULL AND LENGTH(dp.final_text) > 0
+        "#;
+
+        let count: (i64,) = match source_id {
+            Some(sid) => {
+                let sql = format!("{} AND d.source_id = ?", base_query);
+                sqlx::query_as(&sql)
+                    .bind(sid)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_as(base_query)
+                    .fetch_one(&self.pool)
+                    .await?
+            }
+        };
+
+        Ok(count.0 as u64)
+    }
+
+    /// Get documents needing LLM summarization.
+    pub async fn get_needing_summarization(
+        &self,
+        source_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Document>> {
+        let limit_val = limit.max(1) as i64;
+
+        let rows: Vec<DocumentRow> = match source_id {
+            Some(sid) => {
+                sqlx::query_as(
+                    r#"SELECT DISTINCT d.id, d.source_id, d.title,
+                              d.source_url, d.extracted_text, d.synopsis, d.tags,
+                              d.status, d.metadata, d.created_at,
+                              d.updated_at, d.discovery_method
+                       FROM documents d
+                       JOIN document_pages dp ON dp.document_id = d.id
+                       WHERE d.synopsis IS NULL
+                         AND d.source_id = ?
+                         AND dp.final_text IS NOT NULL AND LENGTH(dp.final_text) > 0
+                       LIMIT ?"#,
+                )
+                .bind(sid)
+                .bind(limit_val)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    r#"SELECT DISTINCT d.id, d.source_id, d.title,
+                              d.source_url, d.extracted_text, d.synopsis, d.tags,
+                              d.status, d.metadata, d.created_at,
+                              d.updated_at, d.discovery_method
+                       FROM documents d
+                       JOIN document_pages dp ON dp.document_id = d.id
+                       WHERE d.synopsis IS NULL
+                         AND dp.final_text IS NOT NULL AND LENGTH(dp.final_text) > 0
+                       LIMIT ?"#,
+                )
+                .bind(limit_val)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions_map = self.load_versions_bulk(&doc_ids).await?;
+
+        let docs = rows
+            .into_iter()
+            .map(|row| {
+                let id = row.id.clone();
+                let partial = row.into_partial();
+                let versions = versions_map.get(&id).cloned().unwrap_or_default();
+                partial.with_versions(versions)
+            })
+            .collect();
+
+        Ok(docs)
+    }
+
+    // ========================================================================
+    // Page operations
+    // ========================================================================
+
+    /// Get all pages for a document version.
+    pub async fn get_pages(
+        &self,
+        document_id: &str,
+        version_id: i64,
+    ) -> Result<Vec<crate::models::DocumentPage>> {
+        use crate::models::PageOcrStatus;
+
+        let rows: Vec<(i64, String, i64, i32, Option<String>, Option<String>, Option<String>, String, String, String)> =
+            sqlx::query_as(
+                "SELECT id, document_id, version_id, page_number, pdf_text, ocr_text, final_text, ocr_status, created_at, updated_at
+                 FROM document_pages WHERE document_id = ? AND version_id = ? ORDER BY page_number"
+            )
+            .bind(document_id)
+            .bind(version_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let pages = rows
+            .into_iter()
+            .map(|(id, doc_id, ver_id, page_num, pdf_text, ocr_text, final_text, ocr_status, created_at, updated_at)| {
+                crate::models::DocumentPage {
+                    id,
+                    document_id: doc_id,
+                    version_id: ver_id,
+                    page_number: page_num as u32,
+                    pdf_text,
+                    ocr_text,
+                    final_text,
+                    ocr_status: PageOcrStatus::from_str(&ocr_status).unwrap_or(PageOcrStatus::Pending),
+                    created_at: parse_datetime(&created_at),
+                    updated_at: parse_datetime(&updated_at),
+                }
+            })
+            .collect();
+
+        Ok(pages)
+    }
+
+    /// Get combined final text for all pages of a document.
+    pub async fn get_combined_page_text(
+        &self,
+        document_id: &str,
+        version_id: i64,
+    ) -> Result<Option<String>> {
+        let pages = self.get_pages(document_id, version_id).await?;
+
+        if pages.is_empty() {
+            return Ok(None);
+        }
+
+        let combined: String = pages
+            .into_iter()
+            .filter_map(|p| p.final_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        if combined.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(combined))
+        }
+    }
+
+    // ========================================================================
+    // OCR-related operations
+    // ========================================================================
+
+    /// Count pages needing OCR (status = 'text_extracted').
+    pub async fn count_pages_needing_ocr(&self) -> Result<u64> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM document_pages WHERE ocr_status = 'text_extracted'"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count.0 as u64)
+    }
+
+    /// Get pages needing OCR (status = 'text_extracted').
+    pub async fn get_pages_needing_ocr(&self, limit: usize) -> Result<Vec<crate::models::DocumentPage>> {
+        use crate::models::PageOcrStatus;
+        let limit_val = limit.max(1) as i64;
+
+        let rows: Vec<(i64, String, i64, i32, Option<String>, Option<String>, Option<String>, String, String, String)> =
+            sqlx::query_as(
+                r#"SELECT id, document_id, version_id, page_number, pdf_text, ocr_text, final_text, ocr_status, created_at, updated_at
+                   FROM document_pages
+                   WHERE ocr_status = 'text_extracted'
+                   ORDER BY
+                       CASE
+                           WHEN pdf_text IS NULL OR pdf_text = '' THEN 0
+                           WHEN LENGTH(pdf_text) < 100 THEN 1
+                           ELSE 2
+                       END,
+                       created_at ASC
+                   LIMIT ?"#
+            )
+            .bind(limit_val)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let pages = rows
+            .into_iter()
+            .map(|(id, doc_id, ver_id, page_num, pdf_text, ocr_text, final_text, ocr_status, created_at, updated_at)| {
+                crate::models::DocumentPage {
+                    id,
+                    document_id: doc_id,
+                    version_id: ver_id,
+                    page_number: page_num as u32,
+                    pdf_text,
+                    ocr_text,
+                    final_text,
+                    ocr_status: PageOcrStatus::from_str(&ocr_status).unwrap_or(PageOcrStatus::Pending),
+                    created_at: parse_datetime(&created_at),
+                    updated_at: parse_datetime(&updated_at),
+                }
+            })
+            .collect();
+
+        Ok(pages)
+    }
+
+    /// Get documents needing OCR processing.
+    pub async fn get_needing_ocr(&self, source_id: Option<&str>, limit: usize) -> Result<Vec<Document>> {
+        let limit_val = limit.max(1) as i64;
+
+        // OCR supported MIME types
+        let mime_types = [
+            "application/pdf", "image/png", "image/jpeg", "image/tiff",
+            "image/gif", "image/bmp", "text/plain", "text/html"
+        ];
+        let placeholders: String = mime_types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+
+        let rows: Vec<DocumentRow> = match source_id {
+            Some(sid) => {
+                let sql = format!(
+                    r#"SELECT d.id, d.source_id, d.title, d.source_url, d.extracted_text,
+                              d.synopsis, d.tags, d.status, d.metadata, d.created_at,
+                              d.updated_at, d.discovery_method
+                       FROM documents d
+                       JOIN document_versions dv ON dv.document_id = d.id
+                       WHERE d.status = 'downloaded'
+                         AND dv.mime_type IN ({})
+                         AND d.source_id = ?
+                       GROUP BY d.id
+                       LIMIT ?"#,
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, DocumentRow>(&sql);
+                for mime in &mime_types {
+                    query = query.bind(*mime);
+                }
+                query.bind(sid).bind(limit_val).fetch_all(&self.pool).await?
+            }
+            None => {
+                let sql = format!(
+                    r#"SELECT d.id, d.source_id, d.title, d.source_url, d.extracted_text,
+                              d.synopsis, d.tags, d.status, d.metadata, d.created_at,
+                              d.updated_at, d.discovery_method
+                       FROM documents d
+                       JOIN document_versions dv ON dv.document_id = d.id
+                       WHERE d.status = 'downloaded'
+                         AND dv.mime_type IN ({})
+                       GROUP BY d.id
+                       LIMIT ?"#,
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, DocumentRow>(&sql);
+                for mime in &mime_types {
+                    query = query.bind(*mime);
+                }
+                query.bind(limit_val).fetch_all(&self.pool).await?
+            }
+        };
+
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions_map = self.load_versions_bulk(&doc_ids).await?;
+
+        let docs = rows
+            .into_iter()
+            .map(|row| {
+                let id = row.id.clone();
+                let partial = row.into_partial();
+                let versions = versions_map.get(&id).cloned().unwrap_or_default();
+                partial.with_versions(versions)
+            })
+            .collect();
+
+        Ok(docs)
+    }
+
+    /// Save a document page (insert or update).
+    pub async fn save_page(&self, page: &crate::models::DocumentPage) -> Result<i64> {
+        let now = Utc::now().to_rfc3339();
+        let ocr_status = page.ocr_status.as_str();
+
+        let result = sqlx::query(
+            r#"INSERT INTO document_pages
+               (document_id, version_id, page_number, pdf_text, ocr_text, final_text, ocr_status, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+               ON CONFLICT(document_id, version_id, page_number) DO UPDATE SET
+                   pdf_text = COALESCE(?4, pdf_text),
+                   ocr_text = COALESCE(?5, ocr_text),
+                   final_text = COALESCE(?6, final_text),
+                   ocr_status = ?7,
+                   updated_at = ?8"#
+        )
+        .bind(&page.document_id)
+        .bind(page.version_id)
+        .bind(page.page_number as i32)
+        .bind(&page.pdf_text)
+        .bind(&page.ocr_text)
+        .bind(&page.final_text)
+        .bind(ocr_status)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Set the cached page count for a document version.
+    pub async fn set_version_page_count(&self, version_id: i64, page_count: u32) -> Result<()> {
+        sqlx::query("UPDATE document_versions SET page_count = ? WHERE id = ?")
+            .bind(page_count as i64)
+            .bind(version_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete all pages for a document version.
+    pub async fn delete_pages(&self, document_id: &str, version_id: i64) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM document_pages WHERE document_id = ? AND version_id = ?")
+            .bind(document_id)
+            .bind(version_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Store an OCR result for a page.
+    pub async fn store_page_ocr_result(
+        &self,
+        page_id: i64,
+        backend: &str,
+        ocr_text: Option<&str>,
+        confidence: Option<f64>,
+        processing_time_ms: Option<u64>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let time_ms = processing_time_ms.map(|t| t as i64);
+
+        sqlx::query(
+            r#"INSERT INTO page_ocr_results (page_id, backend, ocr_text, confidence, processing_time_ms, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(page_id, backend) DO UPDATE SET
+                   ocr_text = excluded.ocr_text,
+                   confidence = excluded.confidence,
+                   processing_time_ms = excluded.processing_time_ms,
+                   created_at = excluded.created_at"#
+        )
+        .bind(page_id)
+        .bind(backend)
+        .bind(ocr_text)
+        .bind(confidence)
+        .bind(time_ms)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Check if all pages for a document version are done processing.
+    pub async fn are_all_pages_complete(&self, document_id: &str, version_id: i64) -> Result<bool> {
+        let row: (i64, i64) = sqlx::query_as(
+            r#"SELECT COUNT(*), SUM(CASE WHEN ocr_status IN ('ocr_complete', 'failed', 'skipped') THEN 1 ELSE 0 END)
+               FROM document_pages WHERE document_id = ? AND version_id = ?"#
+        )
+        .bind(document_id)
+        .bind(version_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0 > 0 && row.0 == row.1)
+    }
+
+    /// Finalize a document by combining page text and setting status to OcrComplete.
+    pub async fn finalize_document(&self, document_id: &str) -> Result<bool> {
+        let doc = match self.get(document_id).await? {
+            Some(d) => d,
+            None => return Ok(false),
+        };
+
+        let version = match doc.current_version() {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+
+        let combined_text = match self.get_combined_page_text(document_id, version.id).await? {
+            Some(t) if !t.is_empty() => t,
+            _ => return Ok(false),
+        };
+
+        // Update document with combined text and status
+        let mut updated_doc = doc.clone();
+        updated_doc.extracted_text = Some(combined_text.clone());
+        updated_doc.status = crate::models::DocumentStatus::OcrComplete;
+        updated_doc.updated_at = Utc::now();
+        self.save(&updated_doc).await?;
+
+        // Write text file alongside the document
+        let text_path = version.file_path.with_extension(format!(
+            "{}.txt",
+            version.file_path.extension().unwrap_or_default().to_string_lossy()
+        ));
+        let _ = std::fs::write(&text_path, &combined_text);
+
+        Ok(true)
+    }
+
+    /// Find and finalize all documents that have all pages OCR complete.
+    pub async fn finalize_pending_documents(&self, source_id: Option<&str>) -> Result<usize> {
+        let sql = match source_id {
+            Some(_) => {
+                r#"SELECT DISTINCT d.id FROM documents d
+                   JOIN document_versions dv ON dv.document_id = d.id
+                   JOIN document_pages dp ON dp.document_id = d.id AND dp.version_id = dv.id
+                   WHERE d.status != 'ocr_complete'
+                     AND d.source_id = ?
+                   GROUP BY d.id, dp.version_id
+                   HAVING COUNT(*) = SUM(CASE WHEN dp.ocr_status = 'ocr_complete' THEN 1 ELSE 0 END)
+                     AND COUNT(*) > 0"#
+            }
+            None => {
+                r#"SELECT DISTINCT d.id FROM documents d
+                   JOIN document_versions dv ON dv.document_id = d.id
+                   JOIN document_pages dp ON dp.document_id = d.id AND dp.version_id = dv.id
+                   WHERE d.status != 'ocr_complete'
+                   GROUP BY d.id, dp.version_id
+                   HAVING COUNT(*) = SUM(CASE WHEN dp.ocr_status = 'ocr_complete' THEN 1 ELSE 0 END)
+                     AND COUNT(*) > 0"#
+            }
+        };
+
+        let doc_ids: Vec<(String,)> = match source_id {
+            Some(sid) => {
+                sqlx::query_as(sql)
+                    .bind(sid)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => {
+                sqlx::query_as(sql)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+
+        let mut finalized = 0;
+        for (doc_id,) in doc_ids {
+            if self.finalize_document(&doc_id).await? {
+                finalized += 1;
+            }
+        }
+
+        Ok(finalized)
+    }
+
+    // ========== Stats and Aggregation Methods ==========
+
+    /// Get all source document counts.
+    pub async fn get_all_source_counts(&self) -> Result<HashMap<String, u64>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT source_id, COUNT(*) as count FROM documents GROUP BY source_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source_id, count)| (source_id, count as u64))
+            .collect())
+    }
+
+    /// Get document type statistics (by MIME type).
+    pub async fn get_type_stats(&self, source_id: Option<&str>) -> Result<Vec<(String, u64)>> {
+        let rows: Vec<(String, i64)> = match source_id {
+            Some(sid) => {
+                sqlx::query_as(
+                    r#"SELECT v.mime_type, COUNT(DISTINCT d.id) as count
+                       FROM documents d
+                       JOIN document_versions v ON v.document_id = d.id
+                       WHERE d.source_id = ?
+                       GROUP BY v.mime_type
+                       ORDER BY count DESC"#,
+                )
+                .bind(sid)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    r#"SELECT v.mime_type, COUNT(DISTINCT d.id) as count
+                       FROM documents d
+                       JOIN document_versions v ON v.document_id = d.id
+                       GROUP BY v.mime_type
+                       ORDER BY count DESC"#,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|(mime, count)| (mime, count as u64))
+            .collect())
+    }
+
+    /// Get document category statistics (aggregated from MIME types).
+    pub async fn get_category_stats(&self, source_id: Option<&str>) -> Result<Vec<(String, u64)>> {
+        let type_stats = self.get_type_stats(source_id).await?;
+        let mut cat_counts: HashMap<String, u64> = HashMap::new();
+
+        for (mime, count) in type_stats {
+            let category = helpers::mime_to_category(&mime).to_string();
+            *cat_counts.entry(category).or_default() += count;
+        }
+
+        let mut result: Vec<_> = cat_counts.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(result)
+    }
+
+    /// Get all tags with document counts.
+    pub async fn get_all_tags(&self) -> Result<Vec<(String, usize)>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT tags FROM documents WHERE tags IS NOT NULL AND tags != '[]'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tag_counts: HashMap<String, usize> = HashMap::new();
+        for (tags_json,) in rows {
+            if let Ok(tags) = serde_json::from_str::<Vec<String>>(&tags_json) {
+                for tag in tags {
+                    *tag_counts.entry(tag).or_default() += 1;
+                }
+            }
+        }
+
+        let mut result: Vec<_> = tag_counts.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(result)
+    }
+
+    /// Search tags by prefix.
+    pub async fn search_tags(&self, query: &str, limit: usize) -> Result<Vec<(String, usize)>> {
+        let all_tags = self.get_all_tags().await?;
+        let query_lower = query.to_lowercase();
+
+        let matching: Vec<_> = all_tags
+            .into_iter()
+            .filter(|(tag, _)| tag.to_lowercase().contains(&query_lower))
+            .take(limit)
+            .collect();
+
+        Ok(matching)
+    }
+
+    // ========== Summaries and Navigation ==========
+
+    /// Get all document summaries (lightweight, without extracted_text).
+    pub async fn get_all_summaries(&self) -> Result<Vec<DocumentSummary>> {
+        let rows: Vec<DocumentRow> = sqlx::query_as(
+            r#"SELECT id, source_id, title, source_url, extracted_text, synopsis, tags,
+                      status, metadata, created_at, updated_at, discovery_method
+               FROM documents
+               ORDER BY updated_at DESC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions = self.load_versions_bulk(&doc_ids).await?;
+
+        let summaries = rows
+            .into_iter()
+            .map(|row| {
+                let partial = row.into_partial();
+                let version_list = versions.get(&partial.id).cloned().unwrap_or_default();
+                let current_version = version_list.last().map(|v| VersionSummary {
+                    content_hash: v.content_hash.clone(),
+                    file_path: v.file_path.clone(),
+                    file_size: v.file_size,
+                    mime_type: v.mime_type.clone(),
+                    acquired_at: v.acquired_at,
+                    original_filename: v.original_filename.clone(),
+                    server_date: v.server_date,
+                });
+
+                DocumentSummary {
+                    id: partial.id,
+                    source_id: partial.source_id,
+                    title: partial.title,
+                    source_url: partial.source_url,
+                    synopsis: partial.synopsis,
+                    tags: partial.tags,
+                    status: partial.status,
+                    created_at: partial.created_at,
+                    updated_at: partial.updated_at,
+                    current_version,
+                }
+            })
+            .collect();
+
+        Ok(summaries)
+    }
+
+    /// Get document summaries for a specific source.
+    pub async fn get_summaries_by_source(&self, source_id: &str) -> Result<Vec<DocumentSummary>> {
+        let rows: Vec<DocumentRow> = sqlx::query_as(
+            r#"SELECT id, source_id, title, source_url, extracted_text, synopsis, tags,
+                      status, metadata, created_at, updated_at, discovery_method
+               FROM documents
+               WHERE source_id = ?
+               ORDER BY updated_at DESC"#,
+        )
+        .bind(source_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions = self.load_versions_bulk(&doc_ids).await?;
+
+        let summaries = rows
+            .into_iter()
+            .map(|row| {
+                let partial = row.into_partial();
+                let version_list = versions.get(&partial.id).cloned().unwrap_or_default();
+                let current_version = version_list.last().map(|v| VersionSummary {
+                    content_hash: v.content_hash.clone(),
+                    file_path: v.file_path.clone(),
+                    file_size: v.file_size,
+                    mime_type: v.mime_type.clone(),
+                    acquired_at: v.acquired_at,
+                    original_filename: v.original_filename.clone(),
+                    server_date: v.server_date,
+                });
+
+                DocumentSummary {
+                    id: partial.id,
+                    source_id: partial.source_id,
+                    title: partial.title,
+                    source_url: partial.source_url,
+                    synopsis: partial.synopsis,
+                    tags: partial.tags,
+                    status: partial.status,
+                    created_at: partial.created_at,
+                    updated_at: partial.updated_at,
+                    current_version,
+                }
+            })
+            .collect();
+
+        Ok(summaries)
+    }
+
+    /// Get recent documents (lightweight summaries).
+    pub async fn get_recent(
+        &self,
+        source_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DocumentSummary>> {
+        let rows: Vec<DocumentRow> = match source_id {
+            Some(sid) => {
+                sqlx::query_as(
+                    r#"SELECT id, source_id, title, source_url, extracted_text, synopsis, tags,
+                              status, metadata, created_at, updated_at, discovery_method
+                       FROM documents
+                       WHERE source_id = ?
+                       ORDER BY updated_at DESC
+                       LIMIT ?"#,
+                )
+                .bind(sid)
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    r#"SELECT id, source_id, title, source_url, extracted_text, synopsis, tags,
+                              status, metadata, created_at, updated_at, discovery_method
+                       FROM documents
+                       ORDER BY updated_at DESC
+                       LIMIT ?"#,
+                )
+                .bind(limit as i64)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions = self.load_versions_bulk(&doc_ids).await?;
+
+        let summaries = rows
+            .into_iter()
+            .map(|row| {
+                let partial = row.into_partial();
+                let version_list = versions.get(&partial.id).cloned().unwrap_or_default();
+                let current_version = version_list.last().map(|v| VersionSummary {
+                    content_hash: v.content_hash.clone(),
+                    file_path: v.file_path.clone(),
+                    file_size: v.file_size,
+                    mime_type: v.mime_type.clone(),
+                    acquired_at: v.acquired_at,
+                    original_filename: v.original_filename.clone(),
+                    server_date: v.server_date,
+                });
+
+                DocumentSummary {
+                    id: partial.id,
+                    source_id: partial.source_id,
+                    title: partial.title,
+                    source_url: partial.source_url,
+                    synopsis: partial.synopsis,
+                    tags: partial.tags,
+                    status: partial.status,
+                    created_at: partial.created_at,
+                    updated_at: partial.updated_at,
+                    current_version,
+                }
+            })
+            .collect();
+
+        Ok(summaries)
+    }
+
+    // ========== Content Hash Operations ==========
+
+    /// Get all content hashes with document info.
+    pub async fn get_content_hashes(&self) -> Result<Vec<(String, String, String, String)>> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            r#"SELECT d.id, d.source_id, v.content_hash, d.title
+               FROM documents d
+               JOIN document_versions v ON v.document_id = d.id
+               ORDER BY d.id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Find sources that have a document with the given content hash.
+    pub async fn find_sources_by_hash(
+        &self,
+        content_hash: &str,
+        exclude_source: Option<&str>,
+    ) -> Result<Vec<(String, String, String)>> {
+        let rows: Vec<(String, String, String)> = match exclude_source {
+            Some(excl) => {
+                sqlx::query_as(
+                    r#"SELECT d.source_id, d.id, d.title
+                       FROM documents d
+                       JOIN document_versions v ON v.document_id = d.id
+                       WHERE v.content_hash = ? AND d.source_id != ?"#,
+                )
+                .bind(content_hash)
+                .bind(excl)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as(
+                    r#"SELECT d.source_id, d.id, d.title
+                       FROM documents d
+                       JOIN document_versions v ON v.document_id = d.id
+                       WHERE v.content_hash = ?"#,
+                )
+                .bind(content_hash)
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        Ok(rows)
+    }
+
+    // ========== Virtual Files ==========
+
+    /// Get virtual files for a document.
+    pub async fn get_virtual_files(&self, document_id: &str) -> Result<Vec<VirtualFile>> {
+        let rows: Vec<VirtualFileRow> = sqlx::query_as(
+            r#"SELECT id, document_id, version_id, archive_path, filename,
+                      file_size, mime_type, extracted_text, synopsis, tags,
+                      status, created_at, updated_at
+               FROM virtual_files
+               WHERE document_id = ?
+               ORDER BY filename"#,
+        )
+        .bind(document_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    // ========== Page Operations ==========
+
+    /// Count pages for a document version.
+    pub async fn count_pages(&self, document_id: &str, version_id: i64) -> Result<u32> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM document_pages WHERE document_id = ? AND version_id = ?",
+        )
+        .bind(document_id)
+        .bind(version_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count as u32)
+    }
+
+    /// Get document navigation (prev/next within filtered list).
+    pub async fn get_document_navigation(
+        &self,
+        doc_id: &str,
+        types: &[String],
+        tags: &[String],
+        source_id: Option<&str>,
+        search_query: Option<&str>,
+    ) -> Result<Option<DocumentNavigation>> {
+        // Build dynamic WHERE clause
+        let mut conditions = vec!["1=1".to_string()];
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(sid) = source_id {
+            conditions.push("d.source_id = ?".to_string());
+            params.push(sid.to_string());
+        }
+
+        if !types.is_empty() {
+            let type_conditions: Vec<String> = types
+                .iter()
+                .filter_map(|t| helpers::mime_type_condition(t))
+                .collect();
+            if !type_conditions.is_empty() {
+                conditions.push(format!("({})", type_conditions.join(" OR ")));
+            }
+        }
+
+        for tag in tags {
+            conditions.push("d.tags LIKE ?".to_string());
+            params.push(format!("%\"{}%", tag));
+        }
+
+        if let Some(q) = search_query {
+            conditions.push("(d.title LIKE ? OR d.extracted_text LIKE ?)".to_string());
+            let like_pattern = format!("%{}%", q);
+            params.push(like_pattern.clone());
+            params.push(like_pattern);
+        }
+
+        let where_clause = conditions.join(" AND ");
+
+        // Query with window functions to get position, prev, next
+        let sql = format!(
+            r#"WITH filtered AS (
+                SELECT d.id, d.title,
+                       ROW_NUMBER() OVER (ORDER BY d.updated_at DESC) as row_num
+                FROM documents d
+                JOIN document_versions v ON v.document_id = d.id
+                WHERE {}
+            ),
+            current AS (
+                SELECT row_num FROM filtered WHERE id = ?
+            ),
+            total AS (
+                SELECT COUNT(*) as cnt FROM filtered
+            )
+            SELECT
+                (SELECT id FROM filtered WHERE row_num = current.row_num - 1) as prev_id,
+                (SELECT title FROM filtered WHERE row_num = current.row_num - 1) as prev_title,
+                (SELECT id FROM filtered WHERE row_num = current.row_num + 1) as next_id,
+                (SELECT title FROM filtered WHERE row_num = current.row_num + 1) as next_title,
+                current.row_num as position,
+                total.cnt as total
+            FROM current, total"#,
+            where_clause
+        );
+
+        // Build query dynamically
+        let mut query = sqlx::query_as::<
+            _,
+            (
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+            ),
+        >(&sql);
+
+        for param in &params {
+            query = query.bind(param);
+        }
+        query = query.bind(doc_id);
+
+        let result = query.fetch_optional(&self.pool).await?;
+
+        Ok(result.map(
+            |(prev_id, prev_title, next_id, next_title, position, total)| DocumentNavigation {
+                prev_id,
+                prev_title,
+                next_id,
+                next_title,
+                position: position as u64,
+                total: total as u64,
+            },
+        ))
+    }
+
+    // ========== Browse (Pagination) ==========
+
+    /// Browse documents with filtering and pagination.
+    pub async fn browse(
+        &self,
+        types: &[String],
+        tags: &[String],
+        source_id: Option<&str>,
+        search_query: Option<&str>,
+        page: usize,
+        per_page: usize,
+        cached_total: Option<u64>,
+    ) -> Result<BrowseResult> {
+        // Build dynamic WHERE clause
+        let mut conditions = vec!["1=1".to_string()];
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(sid) = source_id {
+            conditions.push("d.source_id = ?".to_string());
+            params.push(sid.to_string());
+        }
+
+        if !types.is_empty() {
+            let type_conditions: Vec<String> = types
+                .iter()
+                .filter_map(|t| helpers::mime_type_condition(t))
+                .collect();
+            if !type_conditions.is_empty() {
+                conditions.push(format!("({})", type_conditions.join(" OR ")));
+            }
+        }
+
+        for tag in tags {
+            conditions.push("d.tags LIKE ?".to_string());
+            params.push(format!("%\"{}%", tag));
+        }
+
+        if let Some(q) = search_query {
+            conditions.push("(d.title LIKE ? OR d.extracted_text LIKE ?)".to_string());
+            let like_pattern = format!("%{}%", q);
+            params.push(like_pattern.clone());
+            params.push(like_pattern);
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let offset = (page.saturating_sub(1)) * per_page;
+
+        // Get total count
+        let total = if let Some(cached) = cached_total {
+            cached
+        } else {
+            let count_sql = format!(
+                r#"SELECT COUNT(DISTINCT d.id)
+                   FROM documents d
+                   JOIN document_versions v ON v.document_id = d.id
+                   WHERE {}"#,
+                where_clause
+            );
+
+            let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql);
+            for param in &params {
+                count_query = count_query.bind(param);
+            }
+
+            let (count,) = count_query.fetch_one(&self.pool).await?;
+            count as u64
+        };
+
+        // Get documents
+        let select_sql = format!(
+            r#"SELECT DISTINCT d.id, d.source_id, d.title, d.source_url, d.extracted_text,
+                      d.synopsis, d.tags, d.status, d.metadata, d.created_at, d.updated_at,
+                      d.discovery_method
+               FROM documents d
+               JOIN document_versions v ON v.document_id = d.id
+               WHERE {}
+               ORDER BY d.updated_at DESC
+               LIMIT ? OFFSET ?"#,
+            where_clause
+        );
+
+        let mut select_query = sqlx::query_as::<_, DocumentRow>(&select_sql);
+        for param in &params {
+            select_query = select_query.bind(param);
+        }
+        select_query = select_query.bind(per_page as i64).bind(offset as i64);
+
+        let rows: Vec<DocumentRow> = select_query.fetch_all(&self.pool).await?;
+
+        let doc_ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+        let versions = self.load_versions_bulk(&doc_ids).await?;
+
+        let documents: Vec<Document> = rows
+            .into_iter()
+            .map(|row| {
+                let partial = row.into_partial();
+                let doc_versions = versions.get(&partial.id).cloned().unwrap_or_default();
+                partial.with_versions(doc_versions)
+            })
+            .collect();
+
+        let start_position = offset as u64 + 1;
+        let prev_cursor = if page > 1 {
+            Some(format!("{}", page - 1))
+        } else {
+            None
+        };
+        let next_cursor = if (offset + per_page) < total as usize {
+            Some(format!("{}", page + 1))
+        } else {
+            None
+        };
+
+        Ok(BrowseResult {
+            documents,
+            prev_cursor,
+            next_cursor,
+            start_position,
+            total,
+        })
+    }
+
+    /// Count documents matching browse filters.
+    pub async fn browse_count(
+        &self,
+        types: &[String],
+        tags: &[String],
+        source_id: Option<&str>,
+        search_query: Option<&str>,
+    ) -> Result<u64> {
+        let mut conditions = vec!["1=1".to_string()];
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(sid) = source_id {
+            conditions.push("d.source_id = ?".to_string());
+            params.push(sid.to_string());
+        }
+
+        if !types.is_empty() {
+            let type_conditions: Vec<String> = types
+                .iter()
+                .filter_map(|t| helpers::mime_type_condition(t))
+                .collect();
+            if !type_conditions.is_empty() {
+                conditions.push(format!("({})", type_conditions.join(" OR ")));
+            }
+        }
+
+        for tag in tags {
+            conditions.push("d.tags LIKE ?".to_string());
+            params.push(format!("%\"{}%", tag));
+        }
+
+        if let Some(q) = search_query {
+            conditions.push("(d.title LIKE ? OR d.extracted_text LIKE ?)".to_string());
+            let like_pattern = format!("%{}%", q);
+            params.push(like_pattern.clone());
+            params.push(like_pattern);
+        }
+
+        let where_clause = conditions.join(" AND ");
+        let sql = format!(
+            r#"SELECT COUNT(DISTINCT d.id)
+               FROM documents d
+               JOIN document_versions v ON v.document_id = d.id
+               WHERE {}"#,
+            where_clause
+        );
+
+        let mut query = sqlx::query_as::<_, (i64,)>(&sql);
+        for param in &params {
+            query = query.bind(param);
+        }
+
+        let (count,) = query.fetch_one(&self.pool).await?;
+        Ok(count as u64)
+    }
+
+    // ========== OCR Results ==========
+
+    /// Get pages that don't have results from a specific backend.
+    pub async fn get_pages_without_backend(
+        &self,
+        document_id: &str,
+        backend: &str,
+    ) -> Result<Vec<(i64, i64)>> {
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            r#"SELECT dp.id, dp.page_number
+               FROM document_pages dp
+               LEFT JOIN ocr_results ocr ON ocr.page_id = dp.id AND ocr.backend = ?
+               WHERE dp.document_id = ? AND ocr.id IS NULL
+               ORDER BY dp.page_number"#,
+        )
+        .bind(backend)
+        .bind(document_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Get OCR results for multiple pages in bulk.
+    pub async fn get_pages_ocr_results_bulk(
+        &self,
+        page_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<(String, Option<String>, Option<f64>, Option<i64>)>>> {
+        if page_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders: String = page_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            r#"SELECT page_id, backend, text, confidence, processing_time_ms
+               FROM ocr_results
+               WHERE page_id IN ({})
+               ORDER BY page_id, backend"#,
+            placeholders
+        );
+
+        let mut query = sqlx::query_as::<_, (i64, String, Option<String>, Option<f64>, Option<i64>)>(&sql);
+        for id in page_ids {
+            query = query.bind(id);
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut result: HashMap<i64, Vec<(String, Option<String>, Option<f64>, Option<i64>)>> =
+            HashMap::new();
+        for (page_id, backend, text, confidence, processing_time) in rows {
+            result
+                .entry(page_id)
+                .or_default()
+                .push((backend, text, confidence, processing_time));
+        }
+
+        Ok(result)
     }
 }

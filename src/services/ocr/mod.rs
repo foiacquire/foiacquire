@@ -13,26 +13,26 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::repository::DocumentRepository;
+use crate::repository::AsyncDocumentRepository;
 
 pub use processing::{extract_document_text_per_page, ocr_document_page};
 pub use types::{OcrEvent, OcrResult};
 
 /// Service for OCR processing.
 pub struct OcrService {
-    doc_repo: Arc<DocumentRepository>,
+    doc_repo: AsyncDocumentRepository,
 }
 
 impl OcrService {
     /// Create a new OCR service.
-    pub fn new(doc_repo: Arc<DocumentRepository>) -> Self {
+    pub fn new(doc_repo: AsyncDocumentRepository) -> Self {
         Self { doc_repo }
     }
 
     /// Get count of documents needing OCR processing.
-    pub fn count_needing_processing(&self, source_id: Option<&str>) -> anyhow::Result<(u64, u64)> {
-        let docs = self.doc_repo.count_needing_ocr(source_id)?;
-        let pages = self.doc_repo.count_pages_needing_ocr()?;
+    pub async fn count_needing_processing(&self, source_id: Option<&str>) -> anyhow::Result<(u64, u64)> {
+        let docs = self.doc_repo.count_needing_ocr(source_id).await?;
+        let pages = self.doc_repo.count_pages_needing_ocr().await?;
         Ok((docs, pages))
     }
 
@@ -57,7 +57,7 @@ impl OcrService {
 
         // First, finalize any documents that have all pages complete but weren't finalized
         // (this handles documents processed before incremental finalization was added)
-        let pending_finalized = self.doc_repo.finalize_pending_documents(source_id)?;
+        let pending_finalized = self.doc_repo.finalize_pending_documents(source_id).await?;
         if pending_finalized > 0 {
             tracing::info!(
                 "Finalized {} documents that had all pages complete",
@@ -91,7 +91,7 @@ impl OcrService {
         result: &mut OcrResult,
     ) -> anyhow::Result<()> {
         // Get documents needing OCR (same as Phase 1) - we check MIME before processing
-        let total_count = self.doc_repo.count_needing_ocr(source_id)?;
+        let total_count = self.doc_repo.count_needing_ocr(source_id).await?;
 
         if total_count == 0 {
             return Ok(());
@@ -109,7 +109,7 @@ impl OcrService {
             })
             .await;
 
-        let docs = self.doc_repo.get_needing_ocr(source_id, effective_limit)?;
+        let docs = self.doc_repo.get_needing_ocr(source_id, effective_limit).await?;
         let mut checked = 0;
         let mut fixed = 0;
 
@@ -127,6 +127,7 @@ impl OcrService {
                         if self
                             .doc_repo
                             .update_version_mime_type(&doc.id, version.id, &detected_mime)
+                            .await
                             .is_ok()
                         {
                             fixed += 1;
@@ -212,7 +213,7 @@ impl OcrService {
         event_tx: &mpsc::Sender<OcrEvent>,
         result: &mut OcrResult,
     ) -> anyhow::Result<()> {
-        let total_count = self.doc_repo.count_needing_ocr(source_id)?;
+        let total_count = self.doc_repo.count_needing_ocr(source_id).await?;
 
         if total_count == 0 {
             return Ok(());
@@ -240,7 +241,7 @@ impl OcrService {
 
         while offset < effective_limit {
             let batch_limit = (effective_limit - offset).min(batch_size);
-            let docs = self.doc_repo.get_needing_ocr(source_id, batch_limit)?;
+            let docs = self.doc_repo.get_needing_ocr(source_id, batch_limit).await?;
 
             if docs.is_empty() {
                 break;
@@ -271,7 +272,10 @@ impl OcrService {
                         title,
                     }));
 
-                    match extract_document_text_per_page(&doc, &doc_repo) {
+                    // Get tokio runtime handle to run async code in blocking context
+                    let handle = tokio::runtime::Handle::current();
+
+                    match extract_document_text_per_page(&doc, &doc_repo, &handle) {
                         Ok(page_count) => {
                             pages_created.fetch_add(page_count, Ordering::Relaxed);
                             succeeded.fetch_add(1, Ordering::Relaxed);
@@ -337,7 +341,7 @@ impl OcrService {
         event_tx: &mpsc::Sender<OcrEvent>,
         result: &mut OcrResult,
     ) -> anyhow::Result<()> {
-        let pages_needing_ocr = self.doc_repo.count_pages_needing_ocr()?;
+        let pages_needing_ocr = self.doc_repo.count_pages_needing_ocr().await?;
 
         if pages_needing_ocr == 0 {
             return Ok(());
@@ -361,7 +365,7 @@ impl OcrService {
 
         while offset < effective_limit {
             let batch_limit = (effective_limit - offset).min(batch_size);
-            let pages = self.doc_repo.get_pages_needing_ocr(batch_limit)?;
+            let pages = self.doc_repo.get_pages_needing_ocr(batch_limit).await?;
 
             if pages.is_empty() {
                 break;
@@ -391,7 +395,10 @@ impl OcrService {
                         page_number: page_num,
                     }));
 
-                    match ocr_document_page(&page, &doc_repo) {
+                    // Get tokio runtime handle to run async code in blocking context
+                    let handle = tokio::runtime::Handle::current();
+
+                    match ocr_document_page(&page, &doc_repo, &handle) {
                         Ok(ocr_result) => {
                             if ocr_result.improved {
                                 ocr_improved.fetch_add(1, Ordering::Relaxed);
@@ -471,28 +478,31 @@ impl OcrService {
         // Get the document
         let doc = self
             .doc_repo
-            .get(doc_id)?
+            .get(doc_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", doc_id))?;
 
         println!("  {} Processing: {}", console::style("→").cyan(), doc.title);
 
-        // Extract text per-page
-        match extract_document_text_per_page(&doc, &self.doc_repo) {
-            Ok(pages) => {
-                println!(
-                    "  {} Extracted {} pages",
-                    console::style("✓").green(),
-                    pages
-                );
-            }
-            Err(e) => {
-                println!("  {} Failed: {}", console::style("✗").red(), e);
-                return Err(e);
-            }
-        }
+        // Extract text per-page (run in blocking context for CPU-intensive work)
+        let doc_repo = self.doc_repo.clone();
+        let doc_clone = doc.clone();
+        let doc_id_owned = doc_id.to_string();
+
+        let pages = tokio::task::spawn_blocking(move || {
+            let handle = tokio::runtime::Handle::current();
+            extract_document_text_per_page(&doc_clone, &doc_repo, &handle)
+        })
+        .await??;
+
+        println!(
+            "  {} Extracted {} pages",
+            console::style("✓").green(),
+            pages
+        );
 
         // Finalize the document
-        self.doc_repo.finalize_document(doc_id)?;
+        self.doc_repo.finalize_document(&doc_id_owned).await?;
         println!("  {} Document finalized", console::style("✓").green());
 
         Ok(())

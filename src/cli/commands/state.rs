@@ -5,13 +5,10 @@ use std::time::Duration;
 
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
-use tokio::sync::Mutex;
 
 use crate::config::{Config, Settings};
 use crate::models::{Source, SourceType};
-use crate::repository::{
-    create_pool, AsyncCrawlRepository, AsyncSourceRepository, CrawlRepository, SourceRepository,
-};
+use crate::repository::{create_pool, AsyncCrawlRepository, AsyncSourceRepository, DbContext};
 use crate::scrapers::ConfigurableScraper;
 
 use super::helpers::format_bytes;
@@ -174,11 +171,12 @@ pub async fn cmd_crawl(settings: &Settings, source_id: &str, _limit: usize) -> a
     };
 
     let db_path = settings.database_path();
-    let source_repo = SourceRepository::new(&db_path)?;
-    let crawl_repo = Arc::new(Mutex::new(CrawlRepository::new(&db_path)?));
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let source_repo = ctx.sources();
+    let crawl_repo = Arc::new(ctx.crawl());
 
     // Auto-register source
-    let source = match source_repo.get(source_id)? {
+    let source = match source_repo.get(source_id).await? {
         Some(s) => s,
         None => {
             let new_source = Source::new(
@@ -187,7 +185,7 @@ pub async fn cmd_crawl(settings: &Settings, source_id: &str, _limit: usize) -> a
                 scraper_config.name_or(source_id),
                 scraper_config.base_url_or(""),
             );
-            source_repo.save(&new_source)?;
+            source_repo.save(&new_source).await?;
             crate::cli::progress::progress_println(&format!(
                 "  {} Registered source: {}",
                 style("✓").green(),
@@ -199,14 +197,16 @@ pub async fn cmd_crawl(settings: &Settings, source_id: &str, _limit: usize) -> a
 
     // Check crawl state
     {
-        let repo = crawl_repo.lock().await;
-        let (config_changed, _has_pending_urls) =
-            repo.check_config_changed(source_id, &scraper_config)?;
+        let (config_changed, _has_pending_urls) = crawl_repo
+            .check_config_changed(source_id, &scraper_config)
+            .await?;
 
         // Update config hash (we never clear discovered URLs - they're valuable!)
-        repo.store_config_hash(source_id, &scraper_config)?;
+        crawl_repo
+            .store_config_hash(source_id, &scraper_config)
+            .await?;
 
-        let state = repo.get_crawl_state(source_id)?;
+        let state = crawl_repo.get_crawl_state(source_id).await?;
         if state.needs_resume() {
             println!(
                 "{} Resuming crawl ({} pending URLs)",
@@ -240,10 +240,7 @@ pub async fn cmd_crawl(settings: &Settings, source_id: &str, _limit: usize) -> a
     let urls = scraper.discover().await;
     pb.finish_and_clear();
 
-    let state = {
-        let repo = crawl_repo.lock().await;
-        repo.get_crawl_state(source_id)?
-    };
+    let state = crawl_repo.get_crawl_state(source_id).await?;
 
     println!(
         "{} Discovered {} URLs from {} ({} pending)",

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT COUNT(*) as \"count!: i32\" FROM configuration_history WHERE hash = ?",
+  "query": "SELECT COUNT(*) as \"count!: i32\" FROM config_history WHERE hash = ?",
   "describe": {
     "columns": [
       {
@@ -16,5 +16,5 @@
       false
     ]
   },
-  "hash": "e258a209272ca55472b3587ef5ab532eef186e31c28d729e3df9d7ed5b54a181"
+  "hash": "73974d010e650977de7724e9b0e13027ba353861d82862e1a981ed5fe5d8d28b"
 }

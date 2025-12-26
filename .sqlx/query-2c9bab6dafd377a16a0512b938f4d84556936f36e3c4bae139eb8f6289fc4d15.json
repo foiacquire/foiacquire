@@ -36,7 +36,7 @@
       {
         "name": "avg_duration_ms!: f64",
         "ordinal": 6,
-        "type_info": "Integer"
+        "type_info": "Float"
       },
       {
         "name": "total_bytes!: i64",

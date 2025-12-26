@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT hash as \"hash!\" FROM configuration_history ORDER BY created_at DESC LIMIT 1",
+  "query": "SELECT hash as \"hash!\" FROM config_history ORDER BY created_at DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -16,5 +16,5 @@
       false
     ]
   },
-  "hash": "347ef9d831177587a633cc4650658c887003f8d5914675e6b0a9002c0f38f694"
+  "hash": "7ad36e02f4093e5c468baf1240eb40cf882bbe240912f37771c0867b29ec7296"
 }

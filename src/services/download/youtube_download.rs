@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::models::{CrawlUrl, Document, DocumentVersion, UrlStatus};
-use crate::repository::{CrawlRepository, DocumentRepository};
+use crate::repository::{AsyncCrawlRepository, AsyncDocumentRepository};
 use crate::services::youtube;
 
 use super::types::DownloadEvent;
@@ -20,8 +20,8 @@ pub async fn download_youtube_video(
     url: &str,
     crawl_url: &CrawlUrl,
     documents_dir: &Path,
-    doc_repo: &Arc<DocumentRepository>,
-    crawl_repo: &Arc<CrawlRepository>,
+    doc_repo: &Arc<AsyncDocumentRepository>,
+    crawl_repo: &Arc<AsyncCrawlRepository>,
     worker_id: usize,
     event_tx: &mpsc::Sender<DownloadEvent>,
     downloaded: &Arc<AtomicUsize>,
@@ -42,7 +42,7 @@ pub async fn download_youtube_video(
                     let mut failed_url = crawl_url.clone();
                     failed_url.status = UrlStatus::Failed;
                     failed_url.last_error = Some(format!("Failed to read video: {}", e));
-                    let _ = crawl_repo.update_url(&failed_url);
+                    let _ = crawl_repo.update_url(&failed_url).await;
                     failed.fetch_add(1, Ordering::Relaxed);
                     let _ = event_tx
                         .send(DownloadEvent::Failed {
@@ -95,12 +95,12 @@ pub async fn download_youtube_video(
             }
 
             // Check for existing document
-            let existing = doc_repo.get_by_url(url).ok().flatten();
+            let existing = doc_repo.get_by_url(url).await.ok().flatten();
             let new_document = existing.is_none();
 
             if let Some(mut doc) = existing {
                 if doc.add_version(version) {
-                    let _ = doc_repo.save(&doc);
+                    let _ = doc_repo.save(&doc).await;
                 }
             } else {
                 let doc = Document::with_discovery_method(
@@ -112,7 +112,7 @@ pub async fn download_youtube_video(
                     metadata,
                     "youtube".to_string(),
                 );
-                let _ = doc_repo.save(&doc);
+                let _ = doc_repo.save(&doc).await;
             }
 
             // Mark URL as fetched
@@ -120,7 +120,7 @@ pub async fn download_youtube_video(
             fetched_url.status = UrlStatus::Fetched;
             fetched_url.fetched_at = Some(chrono::Utc::now());
             fetched_url.content_hash = Some(content_hash);
-            let _ = crawl_repo.update_url(&fetched_url);
+            let _ = crawl_repo.update_url(&fetched_url).await;
 
             downloaded.fetch_add(1, Ordering::Relaxed);
             let _ = event_tx
@@ -139,7 +139,7 @@ pub async fn download_youtube_video(
             failed_url.status = UrlStatus::Failed;
             failed_url.last_error = Some(format!("yt-dlp: {}", e));
             failed_url.retry_count += 1;
-            let _ = crawl_repo.update_url(&failed_url);
+            let _ = crawl_repo.update_url(&failed_url).await;
             failed.fetch_add(1, Ordering::Relaxed);
             let _ = event_tx
                 .send(DownloadEvent::Failed {

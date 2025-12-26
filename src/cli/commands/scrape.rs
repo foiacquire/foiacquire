@@ -5,14 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use console::style;
-use tokio::sync::Mutex;
 
 use crate::config::{Config, Settings};
 use crate::llm::LlmClient;
 use crate::models::{Document, DocumentStatus, DocumentVersion, Source, SourceType};
-use crate::repository::{
-    ConfigHistoryRepository, CrawlRepository, DocumentRepository, SourceRepository,
-};
+use crate::repository::DbContext;
 use crate::scrapers::{
     load_rate_limit_state, save_rate_limit_state, ConfigurableScraper, RateLimiter,
 };
@@ -167,6 +164,10 @@ pub async fn cmd_scrape(
     if let Err(e) = load_rate_limit_state(&rate_limiter, &db_path).await {
         tracing::warn!("Failed to load rate limit state: {}", e);
     }
+
+    // Use DbContext for config history
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let config_history = ctx.config_history();
 
     // Initial config load for source list
     let config = Config::load().await;
@@ -382,26 +383,24 @@ pub async fn cmd_scrape(
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
             // Check if config changed in DB
-            if let Ok(repo) = ConfigHistoryRepository::new(&db_path) {
-                if let Ok(Some(latest_hash)) = repo.get_latest_hash() {
-                    if latest_hash != current_config_hash {
-                        match reload {
-                            ReloadMode::StopProcess => {
-                                println!(
-                                    "{} Config changed in database, exiting for restart...",
-                                    style("↻").cyan()
-                                );
-                                return Ok(());
-                            }
-                            ReloadMode::Inplace => {
-                                println!(
-                                    "{} Config changed in database, reloading...",
-                                    style("↻").cyan()
-                                );
-                                current_config_hash = latest_hash;
-                            }
-                            ReloadMode::NextRun => {}
+            if let Ok(Some(latest_hash)) = config_history.get_latest_hash().await {
+                if latest_hash != current_config_hash {
+                    match reload {
+                        ReloadMode::StopProcess => {
+                            println!(
+                                "{} Config changed in database, exiting for restart...",
+                                style("↻").cyan()
+                            );
+                            return Ok(());
                         }
+                        ReloadMode::Inplace => {
+                            println!(
+                                "{} Config changed in database, reloading...",
+                                style("↻").cyan()
+                            );
+                            current_config_hash = latest_hash;
+                        }
+                        ReloadMode::NextRun => {}
                     }
                 }
             }
@@ -486,14 +485,13 @@ async fn cmd_scrape_single_tui(
     }
 
     let db_path = settings.database_path();
-    let source_repo = SourceRepository::new(&db_path)?;
-    let doc_repo = DocumentRepository::new(&db_path, &settings.documents_dir)?;
-    let crawl_repo = Arc::new(Mutex::new(CrawlRepository::new(&db_path)?));
-
-    doc_repo.migrate_storage()?;
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let source_repo = ctx.sources();
+    let doc_repo = ctx.documents();
+    let crawl_repo = Arc::new(ctx.crawl());
 
     // Auto-register source if not in database
-    let source = match source_repo.get(source_id)? {
+    let source = match source_repo.get(source_id).await? {
         Some(s) => s,
         None => {
             let new_source = Source::new(
@@ -502,20 +500,25 @@ async fn cmd_scrape_single_tui(
                 scraper_config.name_or(source_id),
                 scraper_config.base_url_or(""),
             );
-            source_repo.save(&new_source)?;
+            source_repo.save(&new_source).await?;
             new_source
         }
     };
 
     // Check crawl state
     {
-        let repo = crawl_repo.lock().await;
-        let (config_changed, _) = repo.check_config_changed(source_id, &scraper_config)?;
+        let (config_changed, _) = crawl_repo
+            .check_config_changed(source_id, &scraper_config)
+            .await?;
         if config_changed {
-            repo.store_config_hash(source_id, &scraper_config)?;
+            crawl_repo
+                .store_config_hash(source_id, &scraper_config)
+                .await?;
         }
         if !config_changed {
-            repo.store_config_hash(source_id, &scraper_config)?;
+            crawl_repo
+                .store_config_hash(source_id, &scraper_config)
+                .await?;
         }
     }
 
@@ -553,13 +556,14 @@ async fn cmd_scrape_single_tui(
         };
 
         // Save document using helper
-        crate::cli::helpers::save_scraped_document(
+        crate::cli::helpers::save_scraped_document_async(
             &doc_repo,
             content,
             &result,
             &source.id,
             &settings.documents_dir,
-        )?;
+        )
+        .await?;
 
         count += 1;
         new_this_session += 1;
@@ -576,7 +580,7 @@ async fn cmd_scrape_single_tui(
     // Update last scraped
     let mut source = source;
     source.last_scraped = Some(chrono::Utc::now());
-    source_repo.save(&source)?;
+    source_repo.save(&source).await?;
 
     // Final status
     if let Some(line) = status_line {
@@ -604,13 +608,12 @@ pub async fn cmd_download(
     settings.ensure_directories()?;
 
     let db_path = settings.database_path();
-    let doc_repo = Arc::new(DocumentRepository::new(&db_path, &settings.documents_dir)?);
-    let crawl_repo = Arc::new(CrawlRepository::new(&db_path)?);
-
-    doc_repo.migrate_storage()?;
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let doc_repo = Arc::new(ctx.documents());
+    let crawl_repo = Arc::new(ctx.crawl());
 
     // Check for pending work
-    let initial_pending = get_pending_count(&db_path, source_id)?;
+    let initial_pending = get_pending_count(&ctx, source_id).await?;
 
     if initial_pending == 0 {
         println!("{} No pending documents to download", style("!").yellow());
@@ -745,14 +748,14 @@ pub async fn cmd_download(
 }
 
 /// Get pending document count for a source or all sources.
-fn get_pending_count(db_path: &std::path::Path, source_id: Option<&str>) -> anyhow::Result<u64> {
-    let crawl_repo = CrawlRepository::new(db_path)?;
+async fn get_pending_count(ctx: &DbContext, source_id: Option<&str>) -> anyhow::Result<u64> {
+    let crawl_repo = ctx.crawl();
 
     if let Some(sid) = source_id {
-        Ok(crawl_repo.get_crawl_state(sid)?.urls_pending)
+        Ok(crawl_repo.get_crawl_state(sid).await?.urls_pending)
     } else {
         // Use bulk query to avoid N+1 pattern
-        let all_stats = crawl_repo.get_all_stats()?;
+        let all_stats = crawl_repo.get_all_stats().await?;
         Ok(all_stats.values().map(|s| s.urls_pending).sum())
     }
 }
@@ -761,8 +764,8 @@ fn get_pending_count(db_path: &std::path::Path, source_id: Option<&str>) -> anyh
 pub async fn cmd_status(settings: &Settings) -> anyhow::Result<()> {
     let db_path = settings.database_path();
 
-    let doc_repo = match DocumentRepository::new(&db_path, &settings.documents_dir) {
-        Ok(r) => r,
+    let ctx = match DbContext::new(&db_path, &settings.documents_dir).await {
+        Ok(c) => c,
         Err(_) => {
             println!(
                 "{} System not initialized. Run 'foiacquire init' first.",
@@ -772,16 +775,17 @@ pub async fn cmd_status(settings: &Settings) -> anyhow::Result<()> {
         }
     };
 
-    let source_repo = SourceRepository::new(&db_path)?;
+    let doc_repo = ctx.documents();
+    let source_repo = ctx.sources();
 
     println!("\n{}", style("FOIAcquire Status").bold());
     println!("{}", "-".repeat(40));
     println!("{:<20} {}", "Data Directory:", settings.data_dir.display());
-    println!("{:<20} {}", "Sources:", source_repo.get_all()?.len());
-    println!("{:<20} {}", "Total Documents:", doc_repo.count()?);
+    println!("{:<20} {}", "Sources:", source_repo.get_all().await?.len());
+    println!("{:<20} {}", "Total Documents:", doc_repo.count().await?);
 
     // Count by status (single bulk query instead of N+1)
-    let status_counts = doc_repo.count_all_by_status()?;
+    let status_counts = doc_repo.count_all_by_status().await?;
     for status in [
         DocumentStatus::Pending,
         DocumentStatus::Downloaded,
@@ -811,13 +815,14 @@ pub async fn cmd_refresh(
     use tokio::sync::Semaphore;
 
     let db_path = settings.database_path();
-    let doc_repo = Arc::new(DocumentRepository::new(&db_path, &settings.documents_dir)?);
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let doc_repo = Arc::new(ctx.documents());
 
     // Get documents that need metadata refresh
     let documents = if let Some(sid) = source_id {
-        doc_repo.get_by_source(sid)?
+        doc_repo.get_by_source(sid).await?
     } else {
-        doc_repo.get_all()?
+        doc_repo.get_all().await?
     };
 
     // Filter to documents needing refresh (missing original_filename or server_date)
@@ -953,7 +958,7 @@ pub async fn cmd_refresh(
                                 }
                             }
 
-                            if let Err(e) = doc_repo.save(&updated_doc) {
+                            if let Err(e) = doc_repo.save(&updated_doc).await {
                                 pb.println(format!(
                                     "{} Failed to save {}: {}",
                                     style("✗").red(),
@@ -976,7 +981,7 @@ pub async fn cmd_refresh(
                                     .await
                                     {
                                         RefreshResult::Updated(updated_doc) => {
-                                            if let Err(e) = doc_repo.save(&updated_doc) {
+                                            if let Err(e) = doc_repo.save(&updated_doc).await {
                                                 pb.println(format!(
                                                     "{} Failed to save {}: {}",
                                                     style("✗").red(),
@@ -988,7 +993,7 @@ pub async fn cmd_refresh(
                                             }
                                         }
                                         RefreshResult::Redownloaded(updated_doc) => {
-                                            if let Err(e) = doc_repo.save(&updated_doc) {
+                                            if let Err(e) = doc_repo.save(&updated_doc).await {
                                                 pb.println(format!(
                                                     "{} Failed to save {}: {}",
                                                     style("✗").red(),
@@ -1024,7 +1029,7 @@ pub async fn cmd_refresh(
                                 .await
                                 {
                                     RefreshResult::Updated(updated_doc) => {
-                                        if let Err(e) = doc_repo.save(&updated_doc) {
+                                        if let Err(e) = doc_repo.save(&updated_doc).await {
                                             pb.println(format!(
                                                 "{} Failed to save {}: {}",
                                                 style("✗").red(),
@@ -1036,7 +1041,7 @@ pub async fn cmd_refresh(
                                         }
                                     }
                                     RefreshResult::Redownloaded(updated_doc) => {
-                                        if let Err(e) = doc_repo.save(&updated_doc) {
+                                        if let Err(e) = doc_repo.save(&updated_doc).await {
                                             pb.println(format!(
                                                 "{} Failed to save {}: {}",
                                                 style("✗").red(),

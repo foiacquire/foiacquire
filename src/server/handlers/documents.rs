@@ -27,7 +27,7 @@ pub async fn document_detail(
     Path(doc_id): Path<String>,
     Query(params): Query<DocumentDetailParams>,
 ) -> impl IntoResponse {
-    let doc = match state.doc_repo.get(&doc_id) {
+    let doc = match state.doc_repo.get(&doc_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return Html(templates::base_template(
@@ -76,6 +76,7 @@ pub async fn document_detail(
             params.source.as_deref(),
             params.q.as_deref(),
         )
+        .await
         .ok()
         .flatten();
 
@@ -122,7 +123,7 @@ pub async fn document_detail(
         .collect();
 
     let other_sources = if let Some(version) = doc.current_version() {
-        find_sources_with_hash(&state, &version.content_hash, &doc.source_id)
+        find_sources_with_hash(&state, &version.content_hash, &doc.source_id).await
     } else {
         vec![]
     };
@@ -130,11 +131,14 @@ pub async fn document_detail(
     let virtual_files: Vec<VirtualFile> = state
         .doc_repo
         .get_virtual_files(&doc_id)
+        .await
         .unwrap_or_default();
 
     let current_version_id = doc.current_version().map(|v| v.id);
-    let page_count: Option<u32> =
-        current_version_id.and_then(|vid| state.doc_repo.count_pages(&doc_id, vid).ok());
+    let page_count: Option<u32> = match current_version_id {
+        Some(vid) => state.doc_repo.count_pages(&doc_id, vid).await.ok(),
+        None => None,
+    };
 
     let content = templates::document_detail(
         &doc.id,
@@ -177,7 +181,7 @@ pub async fn document_versions(
     State(state): State<AppState>,
     Path(doc_id): Path<String>,
 ) -> impl IntoResponse {
-    let doc = match state.doc_repo.get(&doc_id) {
+    let doc = match state.doc_repo.get(&doc_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return (StatusCode::NOT_FOUND, "Document not found").into_response();

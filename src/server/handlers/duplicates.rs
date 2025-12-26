@@ -11,7 +11,7 @@ use super::super::AppState;
 
 /// List documents that exist in multiple sources.
 pub async fn list_duplicates(State(state): State<AppState>) -> impl IntoResponse {
-    let hashes = match state.doc_repo.get_content_hashes() {
+    let hashes = match state.doc_repo.get_content_hashes().await {
         Ok(h) => h,
         Err(e) => {
             return Html(templates::base_template(
