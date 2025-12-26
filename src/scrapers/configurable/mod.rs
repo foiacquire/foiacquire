@@ -8,14 +8,13 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use super::browser::BrowserEngineConfig;
 use super::config::ScraperConfig;
 use super::rate_limiter::RateLimiter;
 use super::HttpClient;
 use crate::models::Source;
-use crate::repository::CrawlRepository;
+use crate::repository::AsyncCrawlRepository;
 
 mod api;
 mod discovery;
@@ -29,7 +28,7 @@ pub struct ConfigurableScraper {
     pub(crate) source: Source,
     pub(crate) config: ScraperConfig,
     pub(crate) client: HttpClient,
-    pub(crate) crawl_repo: Option<Arc<Mutex<CrawlRepository>>>,
+    pub(crate) crawl_repo: Option<Arc<AsyncCrawlRepository>>,
     /// Refresh TTL in days - URLs older than this will be re-checked.
     pub(crate) refresh_ttl_days: u64,
     /// Browser fetcher for anti-bot protected sites (created lazily when needed).
@@ -42,7 +41,7 @@ impl ConfigurableScraper {
     pub fn new(
         source: Source,
         config: ScraperConfig,
-        crawl_repo: Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: Option<Arc<AsyncCrawlRepository>>,
         request_delay: Duration,
         refresh_ttl_days: u64,
     ) -> Self {
@@ -60,7 +59,7 @@ impl ConfigurableScraper {
     pub fn with_rate_limiter(
         source: Source,
         config: ScraperConfig,
-        crawl_repo: Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: Option<Arc<AsyncCrawlRepository>>,
         request_delay: Duration,
         refresh_ttl_days: u64,
         rate_limiter: Option<RateLimiter>,

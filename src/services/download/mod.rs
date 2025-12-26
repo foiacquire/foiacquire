@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::models::{Document, DocumentVersion, UrlStatus};
 use crate::repository::{
-    extract_filename_parts, sanitize_filename, CrawlRepository, DocumentRepository,
+    extract_filename_parts, sanitize_filename, AsyncCrawlRepository, AsyncDocumentRepository,
 };
 use crate::scrapers::{extract_title_from_url, HttpClient};
 use crate::services::youtube;
@@ -24,16 +24,16 @@ use youtube_download::download_youtube_video;
 
 /// Service for downloading documents from the crawl queue.
 pub struct DownloadService {
-    doc_repo: Arc<DocumentRepository>,
-    crawl_repo: Arc<CrawlRepository>,
+    doc_repo: Arc<AsyncDocumentRepository>,
+    crawl_repo: Arc<AsyncCrawlRepository>,
     config: DownloadConfig,
 }
 
 impl DownloadService {
     /// Create a new download service.
     pub fn new(
-        doc_repo: Arc<DocumentRepository>,
-        crawl_repo: Arc<CrawlRepository>,
+        doc_repo: Arc<AsyncDocumentRepository>,
+        crawl_repo: Arc<AsyncCrawlRepository>,
         config: DownloadConfig,
     ) -> Self {
         Self {
@@ -45,15 +45,16 @@ impl DownloadService {
 
     /// Get the number of pending documents for a source (or all sources).
     #[allow(dead_code)]
-    pub fn pending_count(&self, source_id: Option<&str>) -> anyhow::Result<u64> {
+    pub async fn pending_count(&self, source_id: Option<&str>) -> anyhow::Result<u64> {
         if let Some(sid) = source_id {
-            Ok(self.crawl_repo.get_crawl_state(sid)?.urls_pending)
+            Ok(self.crawl_repo.get_crawl_state(sid).await?.urls_pending)
         } else {
             // Aggregate across all sources - we need source repo for this
             // For now just return 0 if no source specified
             Ok(self
                 .crawl_repo
                 .get_crawl_state("all")
+                .await
                 .map(|s| s.urls_pending)
                 .unwrap_or(0))
         }
@@ -100,11 +101,11 @@ impl DownloadService {
                     }
 
                     // Claim a URL to process
-                    let crawl_url = match crawl_repo.claim_pending_url(source_id.as_deref()) {
+                    let crawl_url = match crawl_repo.claim_pending_url(source_id.as_deref()).await {
                         Ok(Some(url)) => url,
                         Ok(None) => {
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            match crawl_repo.claim_pending_url(source_id.as_deref()) {
+                            match crawl_repo.claim_pending_url(source_id.as_deref()).await {
                                 Ok(Some(url)) => url,
                                 _ => break,
                             }
@@ -162,7 +163,7 @@ impl DownloadService {
                             failed_url.status = UrlStatus::Failed;
                             failed_url.last_error = Some(e.to_string());
                             failed_url.retry_count += 1;
-                            let _ = crawl_repo.update_url(&failed_url);
+                            let _ = crawl_repo.update_url(&failed_url).await;
                             failed.fetch_add(1, Ordering::Relaxed);
                             let _ = event_tx
                                 .send(DownloadEvent::Failed {
@@ -179,7 +180,7 @@ impl DownloadService {
                         let mut fetched_url = crawl_url.clone();
                         fetched_url.status = UrlStatus::Fetched;
                         fetched_url.fetched_at = Some(chrono::Utc::now());
-                        let _ = crawl_repo.update_url(&fetched_url);
+                        let _ = crawl_repo.update_url(&fetched_url).await;
                         skipped.fetch_add(1, Ordering::Relaxed);
                         let _ = event_tx
                             .send(DownloadEvent::Unchanged { worker_id, url })
@@ -192,7 +193,7 @@ impl DownloadService {
                         failed_url.status = UrlStatus::Failed;
                         failed_url.last_error = Some(format!("HTTP {}", response.status));
                         failed_url.retry_count += 1;
-                        let _ = crawl_repo.update_url(&failed_url);
+                        let _ = crawl_repo.update_url(&failed_url).await;
                         failed.fetch_add(1, Ordering::Relaxed);
                         let _ = event_tx
                             .send(DownloadEvent::Failed {
@@ -227,7 +228,7 @@ impl DownloadService {
                             let mut failed_url = crawl_url.clone();
                             failed_url.status = UrlStatus::Failed;
                             failed_url.last_error = Some(e.to_string());
-                            let _ = crawl_repo.update_url(&failed_url);
+                            let _ = crawl_repo.update_url(&failed_url).await;
                             failed.fetch_add(1, Ordering::Relaxed);
                             let _ = event_tx
                                 .send(DownloadEvent::Failed {
@@ -295,12 +296,12 @@ impl DownloadService {
                     );
 
                     // Check for existing document
-                    let existing = doc_repo.get_by_url(&url).ok().flatten();
+                    let existing = doc_repo.get_by_url(&url).await.ok().flatten();
                     let new_document = existing.is_none();
 
                     if let Some(mut doc) = existing {
                         if doc.add_version(version) {
-                            let _ = doc_repo.save(&doc);
+                            let _ = doc_repo.save(&doc).await;
                         }
                     } else {
                         let doc = Document::with_discovery_method(
@@ -312,7 +313,7 @@ impl DownloadService {
                             serde_json::json!({}),
                             "crawl".to_string(),
                         );
-                        let _ = doc_repo.save(&doc);
+                        let _ = doc_repo.save(&doc).await;
                     }
 
                     // Mark URL as fetched
@@ -322,7 +323,7 @@ impl DownloadService {
                     fetched_url.etag = etag;
                     fetched_url.last_modified = last_modified;
                     fetched_url.content_hash = Some(content_hash);
-                    let _ = crawl_repo.update_url(&fetched_url);
+                    let _ = crawl_repo.update_url(&fetched_url).await;
 
                     downloaded.fetch_add(1, Ordering::Relaxed);
                     let _ = event_tx
@@ -345,7 +346,7 @@ impl DownloadService {
 
         // Get remaining count
         let remaining = if let Some(sid) = source_id {
-            self.crawl_repo.get_crawl_state(sid)?.urls_pending
+            self.crawl_repo.get_crawl_state(sid).await?.urls_pending
         } else {
             0
         };

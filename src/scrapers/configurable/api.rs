@@ -1,7 +1,6 @@
 //! API-based discovery methods (paginated, cursor, nested).
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::super::config::ScraperConfig;
@@ -9,7 +8,7 @@ use super::super::HttpClient;
 use super::extract::{extract_path, extract_url, extract_urls};
 use super::ConfigurableScraper;
 use crate::models::{CrawlUrl, DiscoveryMethod};
-use crate::repository::CrawlRepository;
+use crate::repository::AsyncCrawlRepository;
 
 impl ConfigurableScraper {
     /// Streaming API paginated discovery.
@@ -17,7 +16,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
     ) {
         let api = match &config.discovery.api {
@@ -127,8 +126,7 @@ impl ConfigurableScraper {
                             Some(api_url.clone()),
                             1,
                         );
-                        let repo = repo.lock().await;
-                        let _ = repo.add_url(&crawl_url);
+                        let _ = repo.add_url(&crawl_url).await;
                     }
 
                     // Send URL to download queue
@@ -184,7 +182,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
     ) {
         let api = match &config.discovery.api {
@@ -292,8 +290,7 @@ impl ConfigurableScraper {
                                 Some(url.clone()),
                                 1,
                             );
-                            let repo = repo.lock().await;
-                            let _ = repo.add_url(&crawl_url);
+                            let _ = repo.add_url(&crawl_url).await;
                         }
 
                         if url_tx.send(doc_url).await.is_err() {

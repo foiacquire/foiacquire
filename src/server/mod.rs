@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::Settings;
-use crate::repository::{CrawlRepository, DocumentRepository, SourceRepository};
+use crate::repository::{AsyncCrawlRepository, AsyncDocumentRepository, AsyncSourceRepository, DbContext};
 
 use cache::StatsCache;
 
@@ -41,9 +41,9 @@ pub struct DeepSeekJobStatus {
 /// Shared state for the web server.
 #[derive(Clone)]
 pub struct AppState {
-    pub doc_repo: Arc<DocumentRepository>,
-    pub source_repo: Arc<SourceRepository>,
-    pub crawl_repo: Arc<CrawlRepository>,
+    pub doc_repo: Arc<AsyncDocumentRepository>,
+    pub source_repo: Arc<AsyncSourceRepository>,
+    pub crawl_repo: Arc<AsyncCrawlRepository>,
     pub documents_dir: PathBuf,
     pub stats_cache: Arc<StatsCache>,
     /// DeepSeek OCR job status (only one can run at a time).
@@ -51,16 +51,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(settings: &Settings) -> anyhow::Result<Self> {
+    pub async fn new(settings: &Settings) -> anyhow::Result<Self> {
         let db_path = settings.database_path();
-        let doc_repo = DocumentRepository::new(&db_path, &settings.documents_dir)?;
-        let source_repo = SourceRepository::new(&db_path)?;
-        let crawl_repo = CrawlRepository::new(&db_path)?;
+        let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
 
         Ok(Self {
-            doc_repo: Arc::new(doc_repo),
-            source_repo: Arc::new(source_repo),
-            crawl_repo: Arc::new(crawl_repo),
+            doc_repo: Arc::new(ctx.documents()),
+            source_repo: Arc::new(ctx.sources()),
+            crawl_repo: Arc::new(ctx.crawl()),
             documents_dir: settings.documents_dir.clone(),
             stats_cache: Arc::new(StatsCache::new()),
             deepseek_job: Arc::new(RwLock::new(DeepSeekJobStatus::default())),
@@ -70,7 +68,7 @@ impl AppState {
 
 /// Start the web server.
 pub async fn serve(settings: &Settings, host: &str, port: u16) -> anyhow::Result<()> {
-    let state = AppState::new(settings)?;
+    let state = AppState::new(settings).await?;
     let app = create_router(state);
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;

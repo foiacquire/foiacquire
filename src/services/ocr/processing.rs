@@ -2,14 +2,16 @@
 
 use crate::models::{Document, DocumentPage, PageOcrStatus};
 use crate::ocr::TextExtractor;
-use crate::repository::DocumentRepository;
+use crate::repository::AsyncDocumentRepository;
 
 use super::types::PageOcrResult;
 
 /// Extract text from a document per-page using pdftotext.
+/// This function runs in a blocking context and uses the runtime handle to call async methods.
 pub fn extract_document_text_per_page(
     doc: &Document,
-    doc_repo: &DocumentRepository,
+    doc_repo: &AsyncDocumentRepository,
+    handle: &tokio::runtime::Handle,
 ) -> anyhow::Result<usize> {
     let extractor = TextExtractor::new();
 
@@ -27,13 +29,13 @@ pub fn extract_document_text_per_page(
         page.pdf_text = Some(result.text.clone());
         page.final_text = Some(result.text);
         page.ocr_status = PageOcrStatus::OcrComplete;
-        doc_repo.save_page(&page)?;
+        handle.block_on(doc_repo.save_page(&page))?;
 
         // Cache page count (1 for non-PDFs)
-        let _ = doc_repo.set_version_page_count(version.id, 1);
+        let _ = handle.block_on(doc_repo.set_version_page_count(version.id, 1));
 
         // Non-PDFs are complete immediately - finalize the document
-        let _ = doc_repo.finalize_document(&doc.id);
+        let _ = handle.block_on(doc_repo.finalize_document(&doc.id));
 
         return Ok(1);
     }
@@ -47,11 +49,11 @@ pub fn extract_document_text_per_page(
 
     // Cache page count if not already cached
     if version.page_count.is_none() {
-        let _ = doc_repo.set_version_page_count(version.id, page_count);
+        let _ = handle.block_on(doc_repo.set_version_page_count(version.id, page_count));
     }
 
     // Delete any existing pages for this document version (in case of re-processing)
-    doc_repo.delete_pages(&doc.id, version.id)?;
+    handle.block_on(doc_repo.delete_pages(&doc.id, version.id))?;
 
     let mut pages_created = 0;
 
@@ -65,17 +67,17 @@ pub fn extract_document_text_per_page(
         page.pdf_text = Some(pdf_text.clone());
         page.ocr_status = PageOcrStatus::TextExtracted;
 
-        let page_id = doc_repo.save_page(&page)?;
+        let page_id = handle.block_on(doc_repo.save_page(&page))?;
 
         // Store pdftotext result in page_ocr_results for comparison
         if !pdf_text.is_empty() {
-            let _ = doc_repo.store_page_ocr_result(
+            let _ = handle.block_on(doc_repo.store_page_ocr_result(
                 page_id,
                 "pdftotext",
                 Some(&pdf_text),
                 None, // no confidence score for pdftotext
                 None, // no processing time tracked
-            );
+            ));
         }
 
         pages_created += 1;
@@ -87,15 +89,17 @@ pub fn extract_document_text_per_page(
 /// Run OCR on a page and compare with existing text.
 /// If all pages for this document are now complete, the document is finalized
 /// (status set to OcrComplete, combined text saved).
+/// This function runs in a blocking context and uses the runtime handle to call async methods.
 pub fn ocr_document_page(
     page: &DocumentPage,
-    doc_repo: &DocumentRepository,
+    doc_repo: &AsyncDocumentRepository,
+    handle: &tokio::runtime::Handle,
 ) -> anyhow::Result<PageOcrResult> {
     let extractor = TextExtractor::new();
 
     // Get the document to find the file path
-    let doc = doc_repo
-        .get(&page.document_id)?
+    let doc = handle
+        .block_on(doc_repo.get(&page.document_id))?
         .ok_or_else(|| anyhow::anyhow!("Document not found"))?;
 
     let version = doc
@@ -131,13 +135,13 @@ pub fn ocr_document_page(
             };
 
             // Store tesseract result in page_ocr_results for comparison
-            let _ = doc_repo.store_page_ocr_result(
+            let _ = handle.block_on(doc_repo.store_page_ocr_result(
                 page.id,
                 "tesseract",
                 Some(&ocr_text),
                 None, // TODO: could extract confidence from tesseract
                 None, // TODO: could track processing time
-            );
+            ));
         }
         Err(e) => {
             tracing::debug!(
@@ -151,12 +155,12 @@ pub fn ocr_document_page(
         }
     };
 
-    doc_repo.save_page(&updated_page)?;
+    handle.block_on(doc_repo.save_page(&updated_page))?;
 
     // Check if all pages for this document are now complete, and if so, finalize it
     let mut document_finalized = false;
-    if doc_repo.are_all_pages_complete(&page.document_id, page.version_id)?
-        && doc_repo.finalize_document(&page.document_id)?
+    if handle.block_on(doc_repo.are_all_pages_complete(&page.document_id, page.version_id))?
+        && handle.block_on(doc_repo.finalize_document(&page.document_id))?
     {
         document_finalized = true;
         tracing::debug!(

@@ -16,7 +16,7 @@ pub async fn index() -> impl IntoResponse {
 
 /// List all sources.
 pub async fn list_sources(State(state): State<AppState>) -> impl IntoResponse {
-    let sources = match state.source_repo.get_all() {
+    let sources = match state.source_repo.get_all().await {
         Ok(s) => s,
         Err(e) => {
             return Html(templates::base_template(
@@ -27,7 +27,7 @@ pub async fn list_sources(State(state): State<AppState>) -> impl IntoResponse {
         }
     };
 
-    let counts = state.doc_repo.get_all_source_counts().unwrap_or_default();
+    let counts = state.doc_repo.get_all_source_counts().await.unwrap_or_default();
 
     let source_data: Vec<_> = sources
         .into_iter()
@@ -47,7 +47,7 @@ pub async fn list_source_documents(
     Path(source_id): Path<String>,
     Query(_params): Query<DateRangeParams>,
 ) -> impl IntoResponse {
-    let source = match state.source_repo.get(&source_id) {
+    let source = match state.source_repo.get(&source_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return Html(templates::base_template(
@@ -65,7 +65,7 @@ pub async fn list_source_documents(
         }
     };
 
-    let documents = match state.doc_repo.get_by_source(&source_id) {
+    let documents = match state.doc_repo.get_by_source(&source_id).await {
         Ok(docs) => docs,
         Err(e) => {
             return Html(templates::base_template(
@@ -79,7 +79,7 @@ pub async fn list_source_documents(
     let timeline = build_timeline_data(&documents);
     let timeline_json = serde_json::to_string(&timeline).unwrap_or_default();
 
-    let duplicates = find_cross_source_duplicates(&state, &documents);
+    let duplicates = find_cross_source_duplicates(&state, &documents).await;
 
     let doc_data: Vec<_> = documents
         .iter()

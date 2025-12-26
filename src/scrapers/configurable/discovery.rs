@@ -1,13 +1,12 @@
 //! Discovery dispatchers for the configurable scraper.
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use super::super::browser::BrowserEngineConfig;
 use super::super::config::ScraperConfig;
 use super::super::HttpClient;
 use super::ConfigurableScraper;
-use crate::repository::CrawlRepository;
+use crate::repository::AsyncCrawlRepository;
 
 impl ConfigurableScraper {
     /// Streaming discovery that sends URLs as they're found (with browser support).
@@ -16,7 +15,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
         browser_config: &Option<BrowserEngineConfig>,
     ) {
@@ -52,7 +51,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
     ) {
         match config.discovery.discovery_type.as_str() {

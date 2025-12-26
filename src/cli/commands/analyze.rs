@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::{Config, Settings};
 use crate::ocr::TextExtractor;
-use crate::repository::DocumentRepository;
+use crate::repository::DbContext;
 
 use super::helpers::truncate;
 use super::scrape::ReloadMode;
@@ -613,7 +613,6 @@ pub async fn cmd_analyze(
     interval: u64,
     reload: ReloadMode,
 ) -> anyhow::Result<()> {
-    use crate::repository::ConfigHistoryRepository;
     use crate::services::{OcrEvent, OcrService};
     use tokio::sync::mpsc;
 
@@ -643,7 +642,9 @@ pub async fn cmd_analyze(
         };
 
     let db_path = settings.database_path();
-    let doc_repo = Arc::new(DocumentRepository::new(&db_path, &settings.documents_dir)?);
+    let ctx = DbContext::new(&db_path, &settings.documents_dir).await?;
+    let doc_repo = ctx.documents();
+    let config_history = ctx.config_history();
 
     // Track config hash for DB-based change detection
     let config = Config::load().await;
@@ -669,7 +670,7 @@ pub async fn cmd_analyze(
 
     loop {
         // Check if there's work to do
-        let (docs_count, pages_count) = service.count_needing_processing(source_id)?;
+        let (docs_count, pages_count) = service.count_needing_processing(source_id).await?;
         if docs_count == 0 && pages_count == 0 {
             if daemon {
                 println!(
@@ -874,26 +875,24 @@ pub async fn cmd_analyze(
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
             // Check if config changed in DB
-            if let Ok(repo) = ConfigHistoryRepository::new(&db_path) {
-                if let Ok(Some(latest_hash)) = repo.get_latest_hash() {
-                    if latest_hash != current_config_hash {
-                        match reload {
-                            ReloadMode::StopProcess => {
-                                println!(
-                                    "{} Config changed in database, exiting for restart...",
-                                    style("↻").cyan()
-                                );
-                                return Ok(());
-                            }
-                            ReloadMode::Inplace => {
-                                println!(
-                                    "{} Config changed in database, continuing...",
-                                    style("↻").cyan()
-                                );
-                                current_config_hash = latest_hash;
-                            }
-                            ReloadMode::NextRun => {}
+            if let Ok(Some(latest_hash)) = config_history.get_latest_hash().await {
+                if latest_hash != current_config_hash {
+                    match reload {
+                        ReloadMode::StopProcess => {
+                            println!(
+                                "{} Config changed in database, exiting for restart...",
+                                style("↻").cyan()
+                            );
+                            return Ok(());
                         }
+                        ReloadMode::Inplace => {
+                            println!(
+                                "{} Config changed in database, continuing...",
+                                style("↻").cyan()
+                            );
+                            current_config_hash = latest_hash;
+                        }
+                        ReloadMode::NextRun => {}
                     }
                 }
             }

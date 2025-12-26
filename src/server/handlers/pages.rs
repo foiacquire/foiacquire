@@ -45,7 +45,7 @@ pub async fn api_document_pages(
     Path(doc_id): Path<String>,
     Query(params): Query<PagesParams>,
 ) -> impl IntoResponse {
-    let doc = match state.doc_repo.get(&doc_id) {
+    let doc = match state.doc_repo.get(&doc_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return (StatusCode::NOT_FOUND, "Document not found").into_response();
@@ -73,7 +73,7 @@ pub async fn api_document_pages(
         }
     };
 
-    let all_pages = match state.doc_repo.get_pages(&doc_id, version_id) {
+    let all_pages = match state.doc_repo.get_pages(&doc_id, version_id).await {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -95,6 +95,7 @@ pub async fn api_document_pages(
     let all_ocr_results = state
         .doc_repo
         .get_pages_ocr_results_bulk(&page_ids)
+        .await
         .unwrap_or_default();
 
     let mut deepseek_map: std::collections::HashMap<i64, Option<String>> =

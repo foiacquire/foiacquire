@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use regex::Regex;
 use scraper::{Html, Selector};
-use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -21,7 +20,7 @@ use super::super::HttpClient;
 use super::extract::resolve_url;
 use super::ConfigurableScraper;
 use crate::models::{CrawlUrl, DiscoveryMethod};
-use crate::repository::CrawlRepository;
+use crate::repository::AsyncCrawlRepository;
 
 /// Configuration for the BFS HTML crawler, parsed from ScraperConfig.
 struct CrawlerConfig {
@@ -218,7 +217,7 @@ async fn send_document_url(
     parent_url: &str,
     depth: u32,
     discovery_method: DiscoveryMethod,
-    crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+    crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
     url_tx: &tokio::sync::mpsc::Sender<String>,
     visited: &mut HashSet<String>,
 ) -> Result<(), ()> {
@@ -234,8 +233,7 @@ async fn send_document_url(
             Some(parent_url.to_string()),
             depth + 1,
         );
-        let repo = repo.lock().await;
-        let _ = repo.add_url(&crawl_url);
+        let _ = repo.add_url(&crawl_url).await;
     }
 
     if url_tx.send(url).await.is_err() {
@@ -316,7 +314,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
         browser_config: &Option<BrowserEngineConfig>,
     ) {
@@ -474,7 +472,7 @@ impl ConfigurableScraper {
         config: &ScraperConfig,
         client: &HttpClient,
         source_id: &str,
-        _crawl_repo: &Option<Arc<Mutex<CrawlRepository>>>,
+        _crawl_repo: &Option<Arc<AsyncCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
     ) {
         let default_base = String::new();

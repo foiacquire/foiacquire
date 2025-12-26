@@ -117,13 +117,13 @@ pub fn build_timeline_from_summaries(summaries: &[DocumentSummary]) -> TimelineR
 }
 
 /// Find documents that exist in multiple sources.
-pub fn find_cross_source_duplicates(
+pub async fn find_cross_source_duplicates(
     state: &AppState,
     documents: &[Document],
 ) -> HashMap<String, Vec<String>> {
     let mut result: HashMap<String, Vec<String>> = HashMap::new();
 
-    let hashes = match state.doc_repo.get_content_hashes() {
+    let hashes = match state.doc_repo.get_content_hashes().await {
         Ok(h) => h,
         Err(_) => return result,
     };
@@ -150,7 +150,7 @@ pub fn find_cross_source_duplicates(
 }
 
 /// Find sources that have a document with the given content hash.
-pub fn find_sources_with_hash(
+pub async fn find_sources_with_hash(
     state: &AppState,
     content_hash: &str,
     exclude_source: &str,
@@ -158,6 +158,7 @@ pub fn find_sources_with_hash(
     match state
         .doc_repo
         .find_sources_by_hash(content_hash, Some(exclude_source))
+        .await
     {
         Ok(results) => {
             let mut sources: Vec<String> = results

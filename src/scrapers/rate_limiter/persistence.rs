@@ -3,29 +3,29 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use tracing::{debug, info};
 
 use super::domain_state::DomainState;
 use super::RateLimiter;
 
-/// Open a database connection with proper concurrency settings.
-fn open_db(db_path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(db_path)?;
-    conn.execute_batch(
-        r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA foreign_keys = ON;
-        PRAGMA busy_timeout = 30000;
-    "#,
-    )?;
-    Ok(conn)
-}
+/// Create a SQLite pool for rate limit persistence.
+async fn create_pool(db_path: &Path) -> anyhow::Result<SqlitePool> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(30));
 
-/// Initialize the rate limit table in the database.
-pub fn init_rate_limit_table(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+
+    // Initialize the table
+    sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS rate_limit_state (
             domain TEXT PRIMARY KEY,
@@ -36,46 +36,40 @@ pub fn init_rate_limit_table(conn: &Connection) -> rusqlite::Result<()> {
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
     "#,
-    )?;
-    Ok(())
+    )
+    .execute(&pool)
+    .await?;
+
+    Ok(pool)
 }
 
 /// Load rate limit state from database into a RateLimiter.
 pub async fn load_rate_limit_state(limiter: &RateLimiter, db_path: &Path) -> anyhow::Result<usize> {
-    let conn = open_db(db_path)?;
-    init_rate_limit_table(&conn)?;
+    let pool = create_pool(db_path).await?;
 
-    let mut stmt = conn.prepare(
-        "SELECT domain, current_delay_ms, in_backoff, total_requests, rate_limit_hits FROM rate_limit_state"
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)? as u64,
-            row.get::<_, i32>(2)? != 0,
-            row.get::<_, i64>(3)? as u64,
-            row.get::<_, i64>(4)? as u64,
-        ))
-    })?;
+    let rows = sqlx::query_as::<_, (String, i64, i32, i64, i64)>(
+        "SELECT domain, current_delay_ms, in_backoff, total_requests, rate_limit_hits FROM rate_limit_state",
+    )
+    .fetch_all(&pool)
+    .await?;
 
     let mut domains = limiter.domains.write().await;
     let base_delay = limiter.config.base_delay;
     let mut count = 0;
 
-    for row in rows {
-        let (domain, delay_ms, in_backoff, total_requests, rate_limit_hits) = row?;
+    for (domain, delay_ms, in_backoff, total_requests, rate_limit_hits) in rows {
+        let in_backoff = in_backoff != 0;
 
         // Only load domains that are still in backoff (have meaningful state)
-        if in_backoff || delay_ms > base_delay.as_millis() as u64 {
+        if in_backoff || delay_ms > base_delay.as_millis() as i64 {
             let state = DomainState {
-                current_delay: Duration::from_millis(delay_ms),
+                current_delay: Duration::from_millis(delay_ms as u64),
                 last_request: None, // Can't restore Instant from DB
                 consecutive_successes: 0,
                 recent_403s: Vec::new(),
                 in_backoff,
-                total_requests,
-                rate_limit_hits,
+                total_requests: total_requests as u64,
+                rate_limit_hits: rate_limit_hits as u64,
             };
             info!(
                 "Restored rate limit state for {}: delay={}ms, in_backoff={}",
@@ -98,8 +92,7 @@ pub async fn load_rate_limit_state(limiter: &RateLimiter, db_path: &Path) -> any
 
 /// Save rate limit state to database.
 pub async fn save_rate_limit_state(limiter: &RateLimiter, db_path: &Path) -> anyhow::Result<usize> {
-    let conn = open_db(db_path)?;
-    init_rate_limit_table(&conn)?;
+    let pool = create_pool(db_path).await?;
 
     let domains = limiter.domains.read().await;
     let base_delay = limiter.config.base_delay;
@@ -108,27 +101,33 @@ pub async fn save_rate_limit_state(limiter: &RateLimiter, db_path: &Path) -> any
     for (domain, state) in domains.iter() {
         // Only save domains with non-default state
         if state.in_backoff || state.current_delay > base_delay {
-            conn.execute(
+            let delay = state.current_delay.as_millis() as i64;
+            let in_backoff = state.in_backoff as i32;
+            let total = state.total_requests as i64;
+            let hits = state.rate_limit_hits as i64;
+
+            sqlx::query(
                 r#"INSERT OR REPLACE INTO rate_limit_state
                    (domain, current_delay_ms, in_backoff, total_requests, rate_limit_hits, updated_at)
                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#,
-                params![
-                    domain,
-                    state.current_delay.as_millis() as i64,
-                    state.in_backoff as i32,
-                    state.total_requests as i64,
-                    state.rate_limit_hits as i64,
-                ],
-            )?;
+            )
+            .bind(&domain)
+            .bind(delay)
+            .bind(in_backoff)
+            .bind(total)
+            .bind(hits)
+            .execute(&pool)
+            .await?;
             count += 1;
         }
     }
 
     // Clean up old entries that are no longer in backoff
-    conn.execute(
-        "DELETE FROM rate_limit_state WHERE in_backoff = 0 AND current_delay_ms <= ?",
-        params![base_delay.as_millis() as i64],
-    )?;
+    let base_delay_ms = base_delay.as_millis() as i64;
+    sqlx::query("DELETE FROM rate_limit_state WHERE in_backoff = 0 AND current_delay_ms <= ?")
+        .bind(base_delay_ms)
+        .execute(&pool)
+        .await?;
 
     if count > 0 {
         debug!("Saved rate limit state for {} domains to database", count);
@@ -148,21 +147,25 @@ pub async fn save_domain_state(
 
     if let Some(state) = domains.get(domain) {
         if state.in_backoff || state.current_delay > base_delay {
-            let conn = open_db(db_path)?;
-            init_rate_limit_table(&conn)?;
+            let pool = create_pool(db_path).await?;
 
-            conn.execute(
+            let delay = state.current_delay.as_millis() as i64;
+            let in_backoff = state.in_backoff as i32;
+            let total = state.total_requests as i64;
+            let hits = state.rate_limit_hits as i64;
+
+            sqlx::query(
                 r#"INSERT OR REPLACE INTO rate_limit_state
                    (domain, current_delay_ms, in_backoff, total_requests, rate_limit_hits, updated_at)
                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"#,
-                params![
-                    domain,
-                    state.current_delay.as_millis() as i64,
-                    state.in_backoff as i32,
-                    state.total_requests as i64,
-                    state.rate_limit_hits as i64,
-                ],
-            )?;
+            )
+            .bind(domain)
+            .bind(delay)
+            .bind(in_backoff)
+            .bind(total)
+            .bind(hits)
+            .execute(&pool)
+            .await?;
         }
     }
 

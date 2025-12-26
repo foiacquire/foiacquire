@@ -227,10 +227,10 @@ impl ConfigurableScraper {
             // Phase 1: Process pending URLs from previous crawl
             if let Some(repo) = &crawl_repo {
                 loop {
-                    let pending = {
-                        let repo = repo.lock().await;
-                        repo.get_pending_urls(&source_id, 50).unwrap_or_default()
-                    };
+                    let pending = repo
+                        .get_pending_urls(&source_id, 50)
+                        .await
+                        .unwrap_or_default();
 
                     if pending.is_empty() {
                         break;
@@ -244,10 +244,10 @@ impl ConfigurableScraper {
                 }
 
                 // Phase 2: Process retryable failed URLs
-                let retryable = {
-                    let repo = repo.lock().await;
-                    repo.get_retryable_urls(&source_id, 50).unwrap_or_default()
-                };
+                let retryable = repo
+                    .get_retryable_urls(&source_id, 50)
+                    .await
+                    .unwrap_or_default();
 
                 for crawl_url in retryable {
                     if url_tx.send(crawl_url.url).await.is_err() {
@@ -258,21 +258,17 @@ impl ConfigurableScraper {
                 // Phase 3: Refresh stale URLs (older than TTL)
                 let cutoff = chrono::Utc::now() - chrono::Duration::days(refresh_ttl_days as i64);
                 loop {
-                    let stale = {
-                        let repo = repo.lock().await;
-                        repo.get_urls_needing_refresh(&source_id, cutoff, 50)
-                            .unwrap_or_default()
-                    };
+                    let stale = repo
+                        .get_urls_needing_refresh(&source_id, cutoff, 50)
+                        .await
+                        .unwrap_or_default();
 
                     if stale.is_empty() {
                         break;
                     }
 
                     for crawl_url in stale {
-                        {
-                            let repo = repo.lock().await;
-                            let _ = repo.mark_url_for_refresh(&source_id, &crawl_url.url);
-                        }
+                        let _ = repo.mark_url_for_refresh(&source_id, &crawl_url.url).await;
                         if url_tx.send(crawl_url.url).await.is_err() {
                             return;
                         }

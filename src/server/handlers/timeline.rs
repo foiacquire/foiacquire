@@ -13,7 +13,7 @@ pub async fn timeline_aggregate(
     State(state): State<AppState>,
     Query(_params): Query<DateRangeParams>,
 ) -> impl IntoResponse {
-    let summaries = match state.doc_repo.get_all_summaries() {
+    let summaries = match state.doc_repo.get_all_summaries().await {
         Ok(s) => s,
         Err(e) => {
             return axum::Json(TimelineResponse {
@@ -34,7 +34,7 @@ pub async fn timeline_source(
     Path(source_id): Path<String>,
     Query(_params): Query<DateRangeParams>,
 ) -> impl IntoResponse {
-    let summaries = match state.doc_repo.get_summaries_by_source(&source_id) {
+    let summaries = match state.doc_repo.get_summaries_by_source(&source_id).await {
         Ok(s) => s,
         Err(e) => {
             return axum::Json(TimelineResponse {

@@ -77,7 +77,7 @@ pub async fn api_reocr_document(
         }
     }
 
-    let doc = match state.doc_repo.get(&document_id) {
+    let doc = match state.doc_repo.get(&document_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return (
@@ -162,6 +162,7 @@ pub async fn api_reocr_document(
     let pages_needing_ocr = match state
         .doc_repo
         .get_pages_without_backend(&document_id, "deepseek")
+        .await
     {
         Ok(pages) => pages,
         Err(e) => {
@@ -222,13 +223,17 @@ pub async fn api_reocr_document(
 
             match ocr_result {
                 Ok(Ok(result)) => {
-                    if let Err(e) = job_state.doc_repo.store_page_ocr_result(
-                        page_id,
-                        "deepseek",
-                        Some(&result.text),
-                        result.confidence.map(|c| c as f64),
-                        Some(result.processing_time_ms),
-                    ) {
+                    if let Err(e) = job_state
+                        .doc_repo
+                        .store_page_ocr_result(
+                            page_id,
+                            "deepseek",
+                            Some(&result.text),
+                            result.confidence.map(|c| c as f64),
+                            Some(result.processing_time_ms),
+                        )
+                        .await
+                    {
                         tracing::error!(
                             "Failed to store OCR result for page {}: {}",
                             page_number,
@@ -242,7 +247,8 @@ pub async fn api_reocr_document(
                     tracing::error!("OCR failed for page {}: {:?}", page_number, e);
                     let _ = job_state
                         .doc_repo
-                        .store_page_ocr_result(page_id, "deepseek", None, None, None);
+                        .store_page_ocr_result(page_id, "deepseek", None, None, None)
+                        .await;
                 }
                 Err(e) => {
                     tracing::error!("Task panic for page {}: {:?}", page_number, e);

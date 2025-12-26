@@ -3,6 +3,7 @@
 use console::style;
 
 use crate::config::Settings;
+use crate::repository::DbContext;
 
 /// Start the web server.
 pub async fn cmd_serve(settings: &Settings, bind: &str) -> anyhow::Result<()> {
@@ -11,8 +12,9 @@ pub async fn cmd_serve(settings: &Settings, bind: &str) -> anyhow::Result<()> {
     // Run database migrations first
     println!("{} Running database migrations...", style("→").cyan(),);
     let db_path = settings.database_path();
-    match crate::repository::run_all_migrations(&db_path, &settings.documents_dir) {
-        Ok(tables) => {
+    match DbContext::new(&db_path, &settings.documents_dir).await {
+        Ok(ctx) => {
+            let tables = ctx.list_tables().await.unwrap_or_default();
             println!(
                 "  {} Database ready ({} tables)",
                 style("✓").green(),

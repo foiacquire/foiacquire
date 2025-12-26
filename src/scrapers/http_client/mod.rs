@@ -16,17 +16,16 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
-use tokio::sync::Mutex;
 
 use super::rate_limiter::RateLimiter;
 use crate::models::{CrawlRequest, CrawlUrl, UrlStatus};
-use crate::repository::CrawlRepository;
+use crate::repository::AsyncCrawlRepository;
 
 /// HTTP client with request logging and conditional request support.
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
-    crawl_repo: Option<Arc<Mutex<CrawlRepository>>>,
+    crawl_repo: Option<Arc<AsyncCrawlRepository>>,
     source_id: String,
     request_delay: Duration,
     referer: Option<String>,
@@ -112,7 +111,7 @@ impl HttpClient {
     }
 
     /// Set the crawl repository for request logging.
-    pub fn with_crawl_repo(mut self, repo: Arc<Mutex<CrawlRepository>>) -> Self {
+    pub fn with_crawl_repo(mut self, repo: Arc<AsyncCrawlRepository>) -> Self {
         self.crawl_repo = Some(repo);
         self
     }
@@ -184,8 +183,7 @@ impl HttpClient {
 
         // Log the request
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            let _ = repo.log_request(&request_log);
+            let _ = repo.log_request(&request_log).await;
         }
 
         // Report status to rate limiter for adaptive backoff
@@ -283,8 +281,7 @@ impl HttpClient {
 
         // Log the request
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            let _ = repo.log_request(&request_log);
+            let _ = repo.log_request(&request_log).await;
         }
 
         // Report status to rate limiter
@@ -318,10 +315,9 @@ impl HttpClient {
     /// Update crawl URL status to fetching.
     pub async fn mark_fetching(&self, url: &str) {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url).await {
                 crawl_url.mark_fetching();
-                let _ = repo.update_url(&crawl_url);
+                let _ = repo.update_url(&crawl_url).await;
             }
         }
     }
@@ -336,10 +332,9 @@ impl HttpClient {
         last_modified: Option<String>,
     ) {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url).await {
                 crawl_url.mark_fetched(content_hash, document_id, etag, last_modified);
-                let _ = repo.update_url(&crawl_url);
+                let _ = repo.update_url(&crawl_url).await;
             }
         }
     }
@@ -347,10 +342,9 @@ impl HttpClient {
     /// Update crawl URL status after skip (304 Not Modified).
     pub async fn mark_skipped(&self, url: &str, reason: &str) {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url).await {
                 crawl_url.mark_skipped(reason);
-                let _ = repo.update_url(&crawl_url);
+                let _ = repo.update_url(&crawl_url).await;
             }
         }
     }
@@ -358,10 +352,9 @@ impl HttpClient {
     /// Update crawl URL status after failure.
     pub async fn mark_failed(&self, url: &str, error: &str) {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(mut crawl_url)) = repo.get_url(&self.source_id, url).await {
                 crawl_url.mark_failed(error, 3);
-                let _ = repo.update_url(&crawl_url);
+                let _ = repo.update_url(&crawl_url).await;
             }
         }
     }
@@ -369,8 +362,7 @@ impl HttpClient {
     /// Track a discovered URL.
     pub async fn track_url(&self, crawl_url: &CrawlUrl) -> bool {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            repo.add_url(crawl_url).unwrap_or(false)
+            repo.add_url(crawl_url).await.unwrap_or(false)
         } else {
             false
         }
@@ -379,8 +371,7 @@ impl HttpClient {
     /// Check if URL was already fetched.
     pub async fn is_fetched(&self, url: &str) -> bool {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(crawl_url)) = repo.get_url(&self.source_id, url).await {
                 matches!(crawl_url.status, UrlStatus::Fetched | UrlStatus::Skipped)
             } else {
                 false
@@ -393,8 +384,7 @@ impl HttpClient {
     /// Get cached headers for a URL.
     pub async fn get_cached_headers(&self, url: &str) -> (Option<String>, Option<String>) {
         if let Some(repo) = &self.crawl_repo {
-            let repo = repo.lock().await;
-            if let Ok(Some(crawl_url)) = repo.get_url(&self.source_id, url) {
+            if let Ok(Some(crawl_url)) = repo.get_url(&self.source_id, url).await {
                 return (crawl_url.etag, crawl_url.last_modified);
             }
         }
