@@ -121,6 +121,51 @@ pub fn mime_icon(mime: &str) -> &'static str {
     }
 }
 
+/// Get the category name for a MIME type.
+pub fn mime_to_category(mime: &str) -> &'static str {
+    mime_type_category(mime).id()
+}
+
+/// Get SQL LIKE patterns for a category.
+/// Returns patterns that can be used with LIKE to match MIME types.
+pub fn category_to_mime_patterns(category: &str) -> Vec<&'static str> {
+    match category.to_lowercase().as_str() {
+        "documents" => vec![
+            "application/pdf",
+            "%word%",
+            "application/msword",
+            "%rfc822%",
+            "message/%",
+            "text/plain",
+            "text/rtf",
+        ],
+        "markup" | "html" | "xml" => vec![
+            "text/html",
+            "application/xhtml+xml",
+            "text/xml",
+            "application/xml",
+        ],
+        "images" => vec!["image/%"],
+        "data" => vec![
+            "%spreadsheet%",
+            "%excel%",
+            "application/vnd.ms-excel",
+            "text/csv",
+            "application/json",
+        ],
+        "archives" => vec![
+            "application/zip",
+            "application/x-zip",
+            "application/x-zip-compressed",
+            "application/x-tar",
+            "application/gzip",
+            "application/x-rar-compressed",
+            "application/x-7z-compressed",
+        ],
+        _ => vec![],
+    }
+}
+
 /// Generate SQL WHERE clause fragment for filtering by category.
 /// The clause refers to `dv.mime_type` (document_versions table alias).
 pub fn mime_type_sql_condition(category: &str) -> Option<String> {
