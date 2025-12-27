@@ -460,9 +460,56 @@ impl DieselCrawlRepository {
         })
     }
 
-    /// Get request statistics (stub - returns empty for now).
-    pub async fn get_request_stats(&self, _source_id: &str) -> Result<RequestStats, DieselError> {
-        Ok(RequestStats::default())
+    /// Get request statistics from crawl_requests table.
+    pub async fn get_request_stats(&self, source_id: &str) -> Result<RequestStats, DieselError> {
+        let mut conn = self.pool.get().await?;
+
+        #[derive(diesel::QueryableByName)]
+        struct StatsRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            total_requests: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            success_200: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            not_modified_304: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            errors: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            avg_duration_ms: i64,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            total_bytes: i64,
+        }
+
+        let query = format!(
+            r#"SELECT
+                COUNT(*) as total_requests,
+                SUM(CASE WHEN response_status = 200 THEN 1 ELSE 0 END) as success_200,
+                SUM(CASE WHEN was_not_modified = 1 THEN 1 ELSE 0 END) as not_modified_304,
+                SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors,
+                COALESCE(AVG(duration_ms), 0) as avg_duration_ms,
+                COALESCE(SUM(response_size), 0) as total_bytes
+               FROM crawl_requests
+               WHERE source_id = '{}'"#,
+            source_id.replace('\'', "''")
+        );
+
+        let results: Vec<StatsRow> = diesel_async::RunQueryDsl::load(
+            diesel::sql_query(&query),
+            &mut conn,
+        ).await?;
+
+        if let Some(row) = results.get(0) {
+            Ok(RequestStats {
+                total_requests: row.total_requests as u64,
+                success_200: row.success_200 as u64,
+                not_modified_304: row.not_modified_304 as u64,
+                errors: row.errors as u64,
+                avg_duration_ms: row.avg_duration_ms as u64,
+                total_bytes: row.total_bytes as u64,
+            })
+        } else {
+            Ok(RequestStats::default())
+        }
     }
 
     /// Get all stats for a source.
@@ -482,9 +529,28 @@ impl DieselCrawlRepository {
 
     /// Get all stats for all sources.
     pub async fn get_all_stats(&self) -> Result<HashMap<String, CrawlStats>, DieselError> {
-        // Stub implementation - returns empty map
-        // In a real implementation, we'd query all sources and aggregate
-        Ok(HashMap::new())
+        let mut conn = self.pool.get().await?;
+
+        // Get all unique source IDs from crawl_urls
+        #[derive(diesel::QueryableByName)]
+        struct SourceIdRow {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            source_id: String,
+        }
+
+        let source_ids: Vec<SourceIdRow> = diesel_async::RunQueryDsl::load(
+            diesel::sql_query("SELECT DISTINCT source_id FROM crawl_urls"),
+            &mut conn,
+        ).await?;
+
+        let mut stats = HashMap::new();
+        for row in source_ids {
+            if let Ok(crawl_stats) = self.get_all_stats_for_source(&row.source_id).await {
+                stats.insert(row.source_id, crawl_stats);
+            }
+        }
+
+        Ok(stats)
     }
 
     /// Get recently fetched URLs.
@@ -608,8 +674,28 @@ impl DieselCrawlRepository {
 
     /// Get all request stats for all sources.
     pub async fn get_all_request_stats(&self) -> Result<HashMap<String, RequestStats>, DieselError> {
-        // Stub implementation - returns empty map
-        Ok(HashMap::new())
+        let mut conn = self.pool.get().await?;
+
+        // Get all unique source IDs from crawl_requests
+        #[derive(diesel::QueryableByName)]
+        struct SourceIdRow {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            source_id: String,
+        }
+
+        let source_ids: Vec<SourceIdRow> = diesel_async::RunQueryDsl::load(
+            diesel::sql_query("SELECT DISTINCT source_id FROM crawl_requests"),
+            &mut conn,
+        ).await?;
+
+        let mut stats = HashMap::new();
+        for row in source_ids {
+            if let Ok(request_stats) = self.get_request_stats(&row.source_id).await {
+                stats.insert(row.source_id, request_stats);
+            }
+        }
+
+        Ok(stats)
     }
 
     /// Get URLs needing refresh (older than cutoff date).
