@@ -416,11 +416,10 @@ pub struct LoadOptions {
     pub target: Option<PathBuf>,
 }
 
-/// Resolved target information.
+/// Resolved target information for SQLite databases.
+/// Only used when DATABASE_URL is NOT set to postgres.
 #[derive(Debug, Clone)]
 pub struct ResolvedTarget {
-    /// The data directory (parent of database).
-    pub data_dir: PathBuf,
     /// The database filename.
     pub database_filename: String,
     /// Full path to the database.
@@ -428,8 +427,8 @@ pub struct ResolvedTarget {
 }
 
 impl ResolvedTarget {
-    /// Resolve a target path to data directory and database info.
-    /// - If target is a .db file, use its parent as data_dir
+    /// Resolve a target path to database filename and path.
+    /// - If target is a .db file, extract filename and use as path
     /// - If target is a directory, look for foiacquire.db inside
     pub fn from_path(target: &Path) -> Self {
         let target = if target.is_absolute() {
@@ -447,14 +446,12 @@ impl ResolvedTarget {
             || (target.exists() && target.is_file());
 
         if is_db_file {
-            let data_dir = target.parent().unwrap_or(Path::new(".")).to_path_buf();
             let database_filename = target
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(DEFAULT_DATABASE_FILENAME)
                 .to_string();
             Self {
-                data_dir,
                 database_filename,
                 database_path: target,
             }
@@ -463,7 +460,6 @@ impl ResolvedTarget {
             let database_filename = DEFAULT_DATABASE_FILENAME.to_string();
             let database_path = target.join(&database_filename);
             Self {
-                data_dir: target,
                 database_filename,
                 database_path,
             }
