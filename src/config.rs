@@ -557,21 +557,17 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
                 .await
                 .unwrap_or_default()
         } else if let Some(ref resolved) = resolved_target {
-            // Only try SQLite database history when NOT using postgres
-            if resolved.database_path.exists() {
-                tracing::debug!(
-                    "No config file found, trying database history: {}",
-                    resolved.database_path.display()
-                );
-                Config::load_from_db(&resolved.database_path)
-                    .await
-                    .unwrap_or_else(|| {
-                        tracing::debug!("No config in database history, using defaults");
-                        Config::default()
-                    })
-            } else {
-                Config::load().await
-            }
+            // Try SQLite database history - just attempt it and handle failure
+            tracing::debug!(
+                "No config file found, trying database history: {}",
+                resolved.database_path.display()
+            );
+            Config::load_from_db(&resolved.database_path)
+                .await
+                .unwrap_or_else(|| {
+                    tracing::debug!("No config in database history, using defaults");
+                    Config::default()
+                })
         } else {
             // Using PostgreSQL - skip SQLite database history, use auto-discovery
             Config::load().await
@@ -610,18 +606,8 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
         settings.database_url = Some(database_url);
     }
 
-    // Save config to database history
-    // For SQLite: only if the database file exists
-    // For Postgres: always try (will fail gracefully if DB not set up)
-    let should_save = if settings.database_url.is_some() {
-        true // Postgres - try to save
-    } else {
-        settings.database_path().exists() // SQLite - only if file exists
-    };
-
-    if should_save {
-        config.save_to_db_if_changed(&settings).await;
-    }
+    // Save config to database history (errors logged gracefully)
+    config.save_to_db_if_changed(&settings).await;
 
     (settings, config)
 }
