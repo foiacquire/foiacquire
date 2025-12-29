@@ -29,7 +29,43 @@ usage() {
 
 cmd_build() {
     echo "Building stealth browser image..."
-    docker build -t "$IMAGE_NAME" -f "$PROJECT_DIR/Dockerfile.chromium" "$PROJECT_DIR"
+
+    # Create stealth entrypoint
+    cat > "$PROJECT_DIR/bin/entrypoint-stealth.sh" << 'EOF'
+#!/bin/sh
+chromium-browser \
+    --headless \
+    --no-sandbox \
+    --disable-gpu \
+    --disable-dev-shm-usage \
+    --disable-software-rasterizer \
+    --disable-blink-features=AutomationControlled \
+    --disable-infobars \
+    --disable-background-networking \
+    --disable-sync \
+    --disable-translate \
+    --no-first-run \
+    --no-default-browser-check \
+    --remote-debugging-port=9223 \
+    "$@" &
+sleep 2
+exec socat TCP-LISTEN:9222,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:9223
+EOF
+    chmod +x "$PROJECT_DIR/bin/entrypoint-stealth.sh"
+
+    # Create stealth Dockerfile
+    cat > "$PROJECT_DIR/Dockerfile.chromium-stealth" << 'EOF'
+FROM alpine:latest
+RUN apk add --no-cache chromium font-noto socat
+RUN adduser -D chrome
+USER chrome
+EXPOSE 9222
+COPY --chown=chrome:chrome bin/entrypoint-stealth.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD []
+EOF
+
+    docker build -t "$IMAGE_NAME" -f "$PROJECT_DIR/Dockerfile.chromium-stealth" "$PROJECT_DIR"
     echo "Done."
 }
 

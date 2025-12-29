@@ -1,0 +1,8 @@
+FROM alpine:latest
+RUN apk add --no-cache chromium font-noto socat
+RUN adduser -D chrome
+USER chrome
+EXPOSE 9222
+COPY --chown=chrome:chrome bin/entrypoint-stealth.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD []
