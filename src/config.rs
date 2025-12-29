@@ -120,46 +120,38 @@ impl Settings {
 
     /// Ensure all directories exist.
     pub fn ensure_directories(&self) -> std::io::Result<()> {
-        // Log diagnostics for debugging permission issues in containers
-        Self::log_directory_diagnostics(&self.data_dir, "data_dir");
-        Self::log_directory_diagnostics(&self.documents_dir, "documents_dir");
+        // Log diagnostics for debugging permission issues in containers (Unix only)
+        #[cfg(unix)]
+        {
+            Self::log_directory_diagnostics(&self.data_dir, "data_dir");
+            Self::log_directory_diagnostics(&self.documents_dir, "documents_dir");
+        }
 
         fs::create_dir_all(&self.data_dir).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!(
-                    "Failed to create data directory '{}': {} (uid={}, gid={})",
-                    self.data_dir.display(),
-                    e,
-                    unsafe { libc::getuid() },
-                    unsafe { libc::getgid() }
-                ),
+                format!("Failed to create data directory '{}': {}", self.data_dir.display(), e),
             )
         })?;
         fs::create_dir_all(&self.documents_dir).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!(
-                    "Failed to create documents directory '{}': {} (uid={}, gid={})",
-                    self.documents_dir.display(),
-                    e,
-                    unsafe { libc::getuid() },
-                    unsafe { libc::getgid() }
-                ),
+                format!("Failed to create documents directory '{}': {}", self.documents_dir.display(), e),
             )
         })?;
         Ok(())
     }
 
-    /// Log diagnostic information about a directory for debugging.
+    /// Log diagnostic information about a directory for debugging (Unix only).
+    #[cfg(unix)]
     fn log_directory_diagnostics(path: &Path, label: &str) {
+        use std::os::unix::fs::MetadataExt;
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         tracing::debug!("{} check: path={}, running as uid={} gid={}", label, path.display(), uid, gid);
 
         if path.exists() {
             if let Ok(meta) = fs::metadata(path) {
-                use std::os::unix::fs::MetadataExt;
                 tracing::debug!(
                     "{} exists: owner={}:{}, mode={:o}, is_dir={}",
                     label,
@@ -173,11 +165,9 @@ impl Settings {
             }
         } else {
             tracing::debug!("{} does not exist, will attempt to create", label);
-            // Check parent
             if let Some(parent) = path.parent() {
                 if parent.exists() {
                     if let Ok(meta) = fs::metadata(parent) {
-                        use std::os::unix::fs::MetadataExt;
                         tracing::debug!(
                             "{} parent exists: path={}, owner={}:{}, mode={:o}",
                             label,
