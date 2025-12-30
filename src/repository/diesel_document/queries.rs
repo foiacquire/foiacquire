@@ -286,7 +286,8 @@ impl DieselDocumentRepository {
         &self,
         source_id: Option<&str>,
         status: Option<&str>,
-        _category: Option<&str>,
+        categories: &[String],
+        tags: &[String],
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Document>, DieselError> {
@@ -304,6 +305,14 @@ impl DieselDocumentRepository {
             }
             if let Some(st) = status {
                 query = query.filter(documents::status.eq(st));
+            }
+            if !categories.is_empty() {
+                query = query.filter(documents::category_id.eq_any(categories));
+            }
+            // Tags are stored as comma-separated, filter docs that contain any of the requested tags
+            for tag in tags {
+                let pattern = format!("%{}%", tag);
+                query = query.filter(documents::tags.like(pattern));
             }
             query.load(&mut conn).await
         })?;
@@ -327,7 +336,8 @@ impl DieselDocumentRepository {
         &self,
         source_id: Option<&str>,
         status: Option<&str>,
-        _category: Option<&str>,
+        categories: &[String],
+        tags: &[String],
     ) -> Result<u64, DieselError> {
         use diesel::dsl::count_star;
         with_conn!(self.pool, conn, {
@@ -337,6 +347,13 @@ impl DieselDocumentRepository {
             }
             if let Some(st) = status {
                 query = query.filter(documents::status.eq(st));
+            }
+            if !categories.is_empty() {
+                query = query.filter(documents::category_id.eq_any(categories));
+            }
+            for tag in tags {
+                let pattern = format!("%{}%", tag);
+                query = query.filter(documents::tags.like(pattern));
             }
             let count: i64 = query.first(&mut conn).await?;
             Ok(count as u64)
