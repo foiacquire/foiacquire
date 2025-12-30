@@ -83,7 +83,8 @@ pub async fn browse_documents(
         .browse(
             params.source.as_deref(),
             None, // status
-            None, // category
+            &types,
+            &tags,
             per_page as u32,
             offset as u32,
         )
@@ -102,7 +103,7 @@ pub async fn browse_documents(
     // Get total count for pagination
     let total = match state
         .doc_repo
-        .browse_count(params.source.as_deref(), None, None)
+        .browse_count(params.source.as_deref(), None, &types, &tags)
         .await
     {
         Ok(count) => count,
@@ -161,6 +162,8 @@ pub async fn browse_documents(
     if skip_count {
         let state_for_count = state.clone();
         let source_bg = params.source.clone();
+        let types_bg = types.clone();
+        let tags_bg = tags.clone();
 
         let cache_key =
             StatsCache::browse_count_key(source_bg.as_deref(), &types, &tags, params.q.as_deref());
@@ -168,7 +171,7 @@ pub async fn browse_documents(
         tokio::spawn(async move {
             if let Ok(count) = state_for_count
                 .doc_repo
-                .browse_count(source_bg.as_deref(), None, None)
+                .browse_count(source_bg.as_deref(), None, &types_bg, &tags_bg)
                 .await
             {
                 state_for_count
