@@ -149,7 +149,12 @@ foiacquire scrape [SOURCE_IDS...] [OPTIONS]
 | `--limit <N>` | Maximum documents per source |
 | `--daemon` | Run continuously |
 | `--interval <SECS>` | Interval between daemon runs |
-| `--reload <MODE>` | Config reload: `next-run`, `stop-process`, `inplace` |
+| `-r, --reload[=MODE]` | Config reload mode (default: `next-run`, or `inplace` if flag used without value) |
+
+**Reload Modes:**
+- `next-run` - Reload config before next daemon iteration (default)
+- `inplace` - Hot-reload config immediately (default when using `-r` or `--reload` alone)
+- `stop-process` - Exit process to allow external restart
 
 **Examples:**
 ```bash
@@ -161,6 +166,12 @@ foiacquire scrape fbi_vault cia_foia --workers 4
 
 # All sources in daemon mode
 foiacquire scrape --all --daemon --interval 3600
+
+# Daemon with hot-reload on config change
+foiacquire scrape --all --daemon --reload
+
+# Daemon with explicit reload mode
+foiacquire scrape --all --daemon --reload=next-run
 ```
 
 ### refresh

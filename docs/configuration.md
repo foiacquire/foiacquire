@@ -17,7 +17,7 @@ The configuration file is discovered in this order:
 {
   "target": "./foia_documents/",
   "database": "foiacquire.db",
-  "user_agent": "FOIAcquire/0.1 (academic research)",
+  "user_agent": "FOIAcquire/0.6 (academic research)",
   "request_timeout": 30,
   "request_delay_ms": 500,
   "default_refresh_ttl_days": 14,
@@ -32,7 +32,7 @@ The configuration file is discovered in this order:
 |-------|------|---------|-------------|
 | `target` | string | `~/Documents/foia/` | Base directory for data and documents |
 | `database` | string | `foiacquire.db` | Database filename (SQLite) |
-| `user_agent` | string | `FOIAcquire/0.1...` | HTTP User-Agent header |
+| `user_agent` | string | `FOIAcquire/0.6...` | HTTP User-Agent header |
 | `request_timeout` | integer | `30` | HTTP request timeout in seconds |
 | `request_delay_ms` | integer | `500` | Delay between requests in milliseconds |
 | `default_refresh_ttl_days` | integer | `14` | Days before re-checking fetched URLs |

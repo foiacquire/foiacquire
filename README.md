@@ -160,20 +160,27 @@ See [docs/configuration.md](docs/configuration.md) for full options.
 # Run with local data directory
 docker run -v ./foia-data:/opt/foiacquire \
   -e USER_ID=$(id -u) -e GROUP_ID=$(id -g) \
-  ghcr.io/monokrome/foiacquire:latest scrape fbi_vault
+  monokrome/foiacquire:latest scrape fbi_vault
 
 # With PostgreSQL
 docker run -v ./foia-data:/opt/foiacquire \
   -e DATABASE_URL=postgres://user:pass@host/foiacquire \
-  ghcr.io/monokrome/foiacquire:latest scrape fbi_vault
+  monokrome/foiacquire:latest scrape fbi_vault
 
 # Start web UI
 docker run -v ./foia-data:/opt/foiacquire \
   -p 3030:3030 \
-  ghcr.io/monokrome/foiacquire:latest serve 0.0.0.0:3030
+  monokrome/foiacquire:latest serve 0.0.0.0:3030
+
+# With browser automation (stealth mode for bot detection bypass)
+docker run -d --name chromium --shm-size=2g monokrome/chromium:stealth
+docker run -v ./foia-data:/opt/foiacquire \
+  -e BROWSER_URL=ws://chromium:9222 \
+  --link chromium \
+  monokrome/foiacquire:latest scrape cia_foia
 ```
 
-See [docs/docker.md](docs/docker.md) for Docker Compose examples and Synology setup.
+See [docs/docker.md](docs/docker.md) for Docker Compose examples, VNC setup, and Synology configuration.
 
 ## Documentation
 

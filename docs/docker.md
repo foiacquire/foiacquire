@@ -6,20 +6,32 @@ Run foiacquire in containers for easy deployment and isolation.
 
 ```bash
 # Pull the image
-docker pull ghcr.io/monokrome/foiacquire:latest
+docker pull monokrome/foiacquire:latest
 
 # Run with a local data directory
 docker run -v ./foia-data:/opt/foiacquire \
   -e USER_ID=$(id -u) -e GROUP_ID=$(id -g) \
-  ghcr.io/monokrome/foiacquire:latest scrape fbi_vault --limit 100
+  monokrome/foiacquire:latest scrape fbi_vault --limit 100
 ```
 
 ## Images
 
+### Application Images
+
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/monokrome/foiacquire:latest` | Main application (Alpine-based) |
-| `ghcr.io/monokrome/foiacquire:latest-tesseract` | With Tesseract OCR included |
+| `monokrome/foiacquire:latest` | Main application (Alpine-based) |
+| `monokrome/foiacquire:tesseract` | With Tesseract OCR included |
+| `monokrome/foiacquire:redis` | With Redis rate limiting support |
+
+### Chromium Images
+
+| Image | Description |
+|-------|-------------|
+| `monokrome/chromium:latest` | Standard Chromium for browser automation |
+| `monokrome/chromium:stealth` | Chromium with anti-bot detection patches |
+
+Both Chromium images support VNC for remote viewing (see [VNC Support](#vnc-support) below).
 
 ## Environment Variables
 
@@ -55,7 +67,7 @@ version: '3.8'
 
 services:
   foiacquire:
-    image: ghcr.io/monokrome/foiacquire:latest
+    image: monokrome/foiacquire:latest
     volumes:
       - ./data:/opt/foiacquire
     environment:
@@ -72,7 +84,7 @@ version: '3.8'
 
 services:
   foiacquire:
-    image: ghcr.io/monokrome/foiacquire:latest
+    image: monokrome/foiacquire:latest
     volumes:
       - ./data:/opt/foiacquire
     environment:
@@ -110,7 +122,7 @@ version: '3.8'
 
 services:
   foiacquire:
-    image: ghcr.io/monokrome/foiacquire:latest
+    image: monokrome/foiacquire:latest
     volumes:
       - ./data:/opt/foiacquire
     environment:
@@ -123,7 +135,7 @@ services:
     command: scrape cia_foia --limit 100
 
   chromium:
-    image: ghcr.io/monokrome/foiacquire-chromium:latest
+    image: monokrome/chromium:stealth
     shm_size: 2g
     # No ports exposed - internal only
 ```
@@ -135,7 +147,7 @@ version: '3.8'
 
 services:
   scraper:
-    image: ghcr.io/monokrome/foiacquire:latest
+    image: monokrome/foiacquire:latest
     volumes:
       - ./data:/opt/foiacquire
     environment:
@@ -152,7 +164,7 @@ services:
     command: scrape --all --daemon --interval 3600
 
   web:
-    image: ghcr.io/monokrome/foiacquire:latest
+    image: monokrome/foiacquire:latest
     volumes:
       - ./data:/opt/foiacquire:ro
     environment:
@@ -165,7 +177,7 @@ services:
     command: serve 0.0.0.0:3030
 
   analyzer:
-    image: ghcr.io/monokrome/foiacquire:latest-tesseract
+    image: monokrome/foiacquire:tesseract
     volumes:
       - ./data:/opt/foiacquire
     environment:
@@ -179,7 +191,7 @@ services:
     command: analyze --daemon --interval 1800 --workers 2
 
   chromium:
-    image: ghcr.io/monokrome/foiacquire-chromium:latest
+    image: monokrome/chromium:stealth
     shm_size: 2g
 
   postgres:
@@ -200,12 +212,61 @@ volumes:
   postgres_data:
 ```
 
+## VNC Support
+
+The Chromium containers support VNC for remote viewing of browser activity, useful for debugging or monitoring scrapes.
+
+### Enabling VNC
+
+Set `VNC_PASSWORD` to enable VNC on port 5900:
+
+```bash
+docker run -d --name chromium \
+  --shm-size=2g \
+  -p 9222:9222 \
+  -p 5900:5900 \
+  -e VNC_PASSWORD=mysecretpassword \
+  monokrome/chromium:stealth
+```
+
+### VNC Options
+
+| Variable | Description |
+|----------|-------------|
+| `VNC_PASSWORD` | Enable VNC with this password (required for VNC) |
+| `VNC_VIEWONLY` | Set to `true` for read-only VNC (default: interactive) |
+
+### Docker Compose with VNC
+
+```yaml
+version: '3.8'
+
+services:
+  chromium:
+    image: monokrome/chromium:stealth
+    shm_size: 2g
+    ports:
+      - "9222:9222"
+      - "5900:5900"
+    environment:
+      - VNC_PASSWORD=mysecretpassword
+      - VNC_VIEWONLY=true
+```
+
+### Connecting
+
+Use any VNC client (TigerVNC, RealVNC, macOS Screen Sharing) to connect:
+
+```
+vnc://localhost:5900
+```
+
 ## Synology NAS
 
 ### Container Manager Setup
 
 1. **Download the image:**
-   - Registry → Search for `ghcr.io/monokrome/foiacquire`
+   - Registry → Search for `monokrome/foiacquire`
    - Download the `latest` tag
 
 2. **Create the container:**
@@ -274,7 +335,7 @@ If you see permission errors:
 ### With Additional OCR Backends
 
 ```dockerfile
-FROM ghcr.io/monokrome/foiacquire:latest
+FROM monokrome/foiacquire:latest
 
 # Add Tesseract with additional languages
 RUN apk add --no-cache \
