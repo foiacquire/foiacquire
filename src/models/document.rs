@@ -79,6 +79,10 @@ pub struct DocumentVersion {
     pub server_date: Option<DateTime<Utc>>,
     /// Cached page count for PDFs (avoids needing to re-read file).
     pub page_count: Option<u32>,
+    /// ID of the archive snapshot this version was fetched from (if from archive).
+    pub archive_snapshot_id: Option<i32>,
+    /// Earliest known archive date for this content (provenance verification).
+    pub earliest_archived_at: Option<DateTime<Utc>>,
 }
 
 impl DocumentVersion {
@@ -122,6 +126,8 @@ impl DocumentVersion {
             original_filename: None,
             server_date: None,
             page_count: None,
+            archive_snapshot_id: None,
+            earliest_archived_at: None,
         }
     }
 
@@ -147,6 +153,8 @@ impl DocumentVersion {
             original_filename,
             server_date,
             page_count: None,
+            archive_snapshot_id: None,
+            earliest_archived_at: None,
         }
     }
 
@@ -175,6 +183,8 @@ impl DocumentVersion {
             original_filename,
             server_date,
             page_count: None,
+            archive_snapshot_id: None,
+            earliest_archived_at: None,
         }
     }
 }

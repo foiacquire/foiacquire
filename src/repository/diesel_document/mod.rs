@@ -529,6 +529,8 @@ impl DieselDocumentRepository {
             original_filename: record.original_filename,
             server_date: parse_datetime_opt(record.server_date),
             page_count: record.page_count.map(|c| c as u32),
+            archive_snapshot_id: record.archive_snapshot_id,
+            earliest_archived_at: parse_datetime_opt(record.earliest_archived_at),
         }
     }
 
@@ -652,7 +654,9 @@ mod tests {
                 source_url TEXT,
                 original_filename TEXT,
                 server_date TEXT,
-                page_count INTEGER
+                page_count INTEGER,
+                archive_snapshot_id INTEGER,
+                earliest_archived_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS document_pages (
@@ -764,6 +768,8 @@ mod tests {
             original_filename: None,
             server_date: None,
             page_count: None,
+            archive_snapshot_id: None,
+            earliest_archived_at: None,
         };
         repo.add_version("doc-2", &version).await.unwrap();
 
