@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
+#[cfg(feature = "browser")]
 use tracing::debug;
 
 use super::rate_limiter::RateLimiter;

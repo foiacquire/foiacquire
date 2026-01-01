@@ -16,6 +16,7 @@ pub mod rate_limiter;
 
 #[cfg(feature = "browser")]
 pub use browser::BrowserFetcher;
+#[cfg(feature = "browser")]
 pub use browser::{BrowserEngineConfig, BrowserEngineType};
 pub use config::ScraperConfig;
 pub use configurable::ConfigurableScraper;

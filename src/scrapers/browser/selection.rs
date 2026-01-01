@@ -4,7 +4,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 /// Strategy for selecting which browser to use for a request.
@@ -61,7 +60,46 @@ impl BrowserSelectionStrategy for RoundRobinStrategy {
 }
 
 /// Random selection - picks a random browser each time.
-pub struct RandomStrategy;
+pub struct RandomStrategy {
+    counter: AtomicUsize,
+}
+
+impl RandomStrategy {
+    pub fn new() -> Self {
+        // Use system time as a simple seed for pseudo-random starting point
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as usize)
+            .unwrap_or(0);
+        Self {
+            counter: AtomicUsize::new(seed),
+        }
+    }
+
+    /// Simple LCG-based pseudo-random number generation
+    fn next_random(&self) -> usize {
+        // Linear congruential generator constants (same as glibc)
+        const A: usize = 1103515245;
+        const C: usize = 12345;
+        loop {
+            let current = self.counter.load(Ordering::Relaxed);
+            let next = current.wrapping_mul(A).wrapping_add(C);
+            if self
+                .counter
+                .compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return next;
+            }
+        }
+    }
+}
+
+impl Default for RandomStrategy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl BrowserSelectionStrategy for RandomStrategy {
     fn select(&self, _url: &str, count: usize, healthy: &[bool]) -> Option<usize> {
@@ -81,7 +119,7 @@ impl BrowserSelectionStrategy for RandomStrategy {
         }
 
         // Random selection from healthy browsers
-        let random_idx = rand::rng().random_range(0..healthy_indices.len());
+        let random_idx = self.next_random() % healthy_indices.len();
         Some(healthy_indices[random_idx])
     }
 }
@@ -150,7 +188,7 @@ impl SelectionStrategyType {
     pub fn create_strategy(&self) -> Box<dyn BrowserSelectionStrategy> {
         match self {
             Self::RoundRobin => Box::new(RoundRobinStrategy::new()),
-            Self::Random => Box::new(RandomStrategy),
+            Self::Random => Box::new(RandomStrategy::new()),
             Self::PerDomain => Box::new(PerDomainStrategy),
         }
     }
@@ -232,7 +270,7 @@ mod tests {
 
     #[test]
     fn random_only_selects_healthy() {
-        let strategy = RandomStrategy;
+        let strategy = RandomStrategy::new();
         let healthy = [false, true, false];
 
         for _ in 0..100 {
@@ -318,7 +356,7 @@ mod tests {
             None
         );
         assert_eq!(
-            RandomStrategy.select("http://example.com", 0, &healthy),
+            RandomStrategy::new().select("http://example.com", 0, &healthy),
             None
         );
         assert_eq!(
@@ -336,7 +374,7 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            RandomStrategy.select("http://example.com", 1, &healthy),
+            RandomStrategy::new().select("http://example.com", 1, &healthy),
             Some(0)
         );
         assert_eq!(
@@ -354,7 +392,7 @@ mod tests {
             None
         );
         assert_eq!(
-            RandomStrategy.select("http://example.com", 1, &healthy),
+            RandomStrategy::new().select("http://example.com", 1, &healthy),
             None
         );
         assert_eq!(
@@ -382,7 +420,7 @@ mod tests {
 
     #[test]
     fn random_distributes_across_multiple_healthy() {
-        let strategy = RandomStrategy;
+        let strategy = RandomStrategy::new();
         let healthy = [true, true, true, true];
         let mut seen = [false; 4];
 
@@ -403,7 +441,7 @@ mod tests {
 
     #[test]
     fn random_returns_none_when_all_unhealthy() {
-        let strategy = RandomStrategy;
+        let strategy = RandomStrategy::new();
         let healthy = [false, false, false];
 
         assert_eq!(strategy.select("http://example.com", 3, &healthy), None);

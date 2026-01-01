@@ -2051,7 +2051,6 @@ dependencies = [
  "ocrs",
  "paddle-ocr-rs",
  "prefer",
- "rand 0.9.2",
  "ratatui",
  "redis",
  "regex",
