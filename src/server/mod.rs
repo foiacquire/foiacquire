@@ -90,6 +90,7 @@ mod tests {
 
     use crate::models::{Document, DocumentStatus, Source, SourceType};
     use crate::repository::diesel_context::DieselDbContext;
+    use crate::repository::migrations;
 
     async fn setup_test_app() -> (axum::Router, tempfile::TempDir) {
         let dir = tempdir().unwrap();
@@ -97,8 +98,9 @@ mod tests {
         let docs_dir = dir.path().join("docs");
         std::fs::create_dir_all(&docs_dir).unwrap();
 
+        let db_url = format!("sqlite:{}", db_path.display());
+        migrations::run_migrations(&db_url).await.unwrap();
         let ctx = DieselDbContext::from_sqlite_path(&db_path, &docs_dir).unwrap();
-        ctx.init_schema().await.unwrap();
 
         let state = AppState {
             doc_repo: Arc::new(ctx.documents()),
@@ -122,8 +124,9 @@ mod tests {
         let docs_dir = dir.path().join("docs");
         std::fs::create_dir_all(&docs_dir).unwrap();
 
+        let db_url = format!("sqlite:{}", db_path.display());
+        migrations::run_migrations(&db_url).await.unwrap();
         let ctx = DieselDbContext::from_sqlite_path(&db_path, &docs_dir).unwrap();
-        ctx.init_schema().await.unwrap();
 
         // Add test data
         let source = Source::new(

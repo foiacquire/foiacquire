@@ -3,6 +3,7 @@
 use console::style;
 
 use crate::config::Settings;
+use crate::repository::migrations;
 
 /// Start the web server.
 pub async fn cmd_serve(settings: &Settings, bind: &str, no_migrate: bool) -> anyhow::Result<()> {
@@ -34,7 +35,7 @@ pub async fn cmd_serve(settings: &Settings, bind: &str, no_migrate: bool) -> any
     } else {
         // Run database migrations
         println!("{} Running database migrations...", style("→").cyan(),);
-        match ctx.init_schema().await {
+        match migrations::run_migrations(&settings.database_url()).await {
             Ok(()) => {
                 println!("  {} Database ready", style("✓").green(),);
             }

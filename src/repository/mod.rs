@@ -25,11 +25,14 @@ pub mod diesel_source;
 // Utilities
 pub mod util;
 
-// Database migration
+// Database migration (legacy - to be removed)
 pub mod migration;
 #[cfg(feature = "postgres")]
 pub mod migration_postgres;
 pub mod migration_sqlite;
+
+// Diesel migrations (new)
+pub mod migrations;
 
 // Document helpers (types like DocumentNavigation, etc.)
 mod document;

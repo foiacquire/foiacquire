@@ -5,8 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use diesel_async::SimpleAsyncConnection;
-
 use super::diesel_config_history::DieselConfigHistoryRepository;
 use super::diesel_crawl::DieselCrawlRepository;
 use super::diesel_document::DieselDocumentRepository;
@@ -77,36 +75,4 @@ impl DbContext {
         DieselConfigHistoryRepository::new(self.pool.clone())
     }
 
-    /// Initialize database schema.
-    pub async fn init_schema(&self) -> Result<(), DbError> {
-        crate::with_conn_split!(self.pool,
-            sqlite: conn => {
-                init_sqlite_schema(&mut conn).await
-            },
-            postgres: conn => {
-                init_postgres_schema(&mut conn).await
-            }
-        )
-    }
-}
-
-/// Initialize SQLite schema.
-async fn init_sqlite_schema(conn: &mut super::pool::SqliteConn) -> Result<(), DbError> {
-    conn.batch_execute(include_str!("schema_sqlite.sql")).await
-}
-
-/// Initialize PostgreSQL schema.
-#[cfg(feature = "postgres")]
-async fn init_postgres_schema(conn: &mut diesel_async::AsyncPgConnection) -> Result<(), DbError> {
-    use diesel_async::RunQueryDsl;
-
-    // PostgreSQL needs statements executed separately
-    let statements = include_str!("schema_postgres.sql");
-    for stmt in statements.split(';') {
-        let stmt = stmt.trim();
-        if !stmt.is_empty() && !stmt.starts_with("--") {
-            diesel::sql_query(stmt).execute(conn).await?;
-        }
-    }
-    Ok(())
 }

@@ -129,38 +129,42 @@ impl DieselDocumentRepository {
                 Ok(result.id)
             },
             postgres: conn => {
-                use diesel::upsert::{excluded, on_constraint};
-                // Use partial unique index name for ON CONFLICT with page-level results
-                let result: i32 = diesel::insert_into(document_analysis_results::table)
-                    .values(NewDocumentAnalysisResult {
-                        page_id: Some(page_id as i32),
-                        document_id,
-                        version_id,
-                        analysis_type,
-                        backend,
-                        result_text,
-                        confidence,
-                        processing_time_ms: processing_time,
-                        error,
-                        status,
-                        created_at: &now,
-                        metadata: metadata_str.as_deref(),
-                    })
-                    .on_conflict(on_constraint("idx_analysis_results_page_unique"))
-                    .do_update()
-                    .set((
-                        document_analysis_results::result_text.eq(excluded(document_analysis_results::result_text)),
-                        document_analysis_results::confidence.eq(excluded(document_analysis_results::confidence)),
-                        document_analysis_results::processing_time_ms.eq(excluded(document_analysis_results::processing_time_ms)),
-                        document_analysis_results::error.eq(excluded(document_analysis_results::error)),
-                        document_analysis_results::status.eq(excluded(document_analysis_results::status)),
-                        document_analysis_results::created_at.eq(excluded(document_analysis_results::created_at)),
-                        document_analysis_results::metadata.eq(excluded(document_analysis_results::metadata)),
-                    ))
-                    .returning(document_analysis_results::id)
-                    .get_result(&mut conn)
-                    .await?;
-                Ok(result as i64)
+                // Use raw SQL for upsert with partial unique index (Diesel doesn't support this)
+                #[derive(diesel::QueryableByName)]
+                struct InsertResult {
+                    #[diesel(sql_type = diesel::sql_types::Integer)]
+                    id: i32,
+                }
+                let result: InsertResult = diesel::sql_query(
+                    "INSERT INTO document_analysis_results
+                     (page_id, document_id, version_id, analysis_type, backend, result_text,
+                      confidence, processing_time_ms, error, status, created_at, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                     ON CONFLICT (page_id, analysis_type, backend) WHERE page_id IS NOT NULL
+                     DO UPDATE SET result_text = EXCLUDED.result_text,
+                                   confidence = EXCLUDED.confidence,
+                                   processing_time_ms = EXCLUDED.processing_time_ms,
+                                   error = EXCLUDED.error,
+                                   status = EXCLUDED.status,
+                                   created_at = EXCLUDED.created_at,
+                                   metadata = EXCLUDED.metadata
+                     RETURNING id"
+                )
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Integer>, _>(Some(page_id as i32))
+                .bind::<diesel::sql_types::Text, _>(document_id)
+                .bind::<diesel::sql_types::Integer, _>(version_id)
+                .bind::<diesel::sql_types::Text, _>(analysis_type)
+                .bind::<diesel::sql_types::Text, _>(backend)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(result_text)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Float>, _>(confidence)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Integer>, _>(processing_time)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(error)
+                .bind::<diesel::sql_types::Text, _>(status)
+                .bind::<diesel::sql_types::Text, _>(&now)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(metadata_str.as_deref())
+                .get_result(&mut conn)
+                .await?;
+                Ok(result.id as i64)
             }
         )
     }
@@ -213,38 +217,41 @@ impl DieselDocumentRepository {
                 Ok(result.id)
             },
             postgres: conn => {
-                use diesel::upsert::{excluded, on_constraint};
-                // Use partial unique index name for ON CONFLICT with document-level results
-                let result: i32 = diesel::insert_into(document_analysis_results::table)
-                    .values(NewDocumentAnalysisResult {
-                        page_id: None,
-                        document_id,
-                        version_id,
-                        analysis_type,
-                        backend,
-                        result_text,
-                        confidence,
-                        processing_time_ms: processing_time,
-                        error,
-                        status,
-                        created_at: &now,
-                        metadata: metadata_str.as_deref(),
-                    })
-                    .on_conflict(on_constraint("idx_analysis_results_doc_unique"))
-                    .do_update()
-                    .set((
-                        document_analysis_results::result_text.eq(excluded(document_analysis_results::result_text)),
-                        document_analysis_results::confidence.eq(excluded(document_analysis_results::confidence)),
-                        document_analysis_results::processing_time_ms.eq(excluded(document_analysis_results::processing_time_ms)),
-                        document_analysis_results::error.eq(excluded(document_analysis_results::error)),
-                        document_analysis_results::status.eq(excluded(document_analysis_results::status)),
-                        document_analysis_results::created_at.eq(excluded(document_analysis_results::created_at)),
-                        document_analysis_results::metadata.eq(excluded(document_analysis_results::metadata)),
-                    ))
-                    .returning(document_analysis_results::id)
-                    .get_result(&mut conn)
-                    .await?;
-                Ok(result as i64)
+                // Use raw SQL for upsert with partial unique index (Diesel doesn't support this)
+                #[derive(diesel::QueryableByName)]
+                struct InsertResult {
+                    #[diesel(sql_type = diesel::sql_types::Integer)]
+                    id: i32,
+                }
+                let result: InsertResult = diesel::sql_query(
+                    "INSERT INTO document_analysis_results
+                     (page_id, document_id, version_id, analysis_type, backend, result_text,
+                      confidence, processing_time_ms, error, status, created_at, metadata)
+                     VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     ON CONFLICT (document_id, version_id, analysis_type, backend) WHERE page_id IS NULL
+                     DO UPDATE SET result_text = EXCLUDED.result_text,
+                                   confidence = EXCLUDED.confidence,
+                                   processing_time_ms = EXCLUDED.processing_time_ms,
+                                   error = EXCLUDED.error,
+                                   status = EXCLUDED.status,
+                                   created_at = EXCLUDED.created_at,
+                                   metadata = EXCLUDED.metadata
+                     RETURNING id"
+                )
+                .bind::<diesel::sql_types::Text, _>(document_id)
+                .bind::<diesel::sql_types::Integer, _>(version_id)
+                .bind::<diesel::sql_types::Text, _>(analysis_type)
+                .bind::<diesel::sql_types::Text, _>(backend)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(result_text)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Float>, _>(confidence)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Integer>, _>(processing_time)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(error)
+                .bind::<diesel::sql_types::Text, _>(status)
+                .bind::<diesel::sql_types::Text, _>(&now)
+                .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(metadata_str.as_deref())
+                .get_result(&mut conn)
+                .await?;
+                Ok(result.id as i64)
             }
         )
     }
