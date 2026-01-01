@@ -1098,10 +1098,26 @@ pub async fn cmd_db_dedup(
     let mut total_deleted = 0u64;
     let mut total_refs_updated = 0u64;
 
-    // Process in batches
+    // Helper to escape SQL string
+    fn escape_sql(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    // Helper to build IN clause from IDs
+    fn build_in_clause(ids: &[String]) -> String {
+        ids.iter()
+            .map(|id| format!("'{}'", escape_sql(id)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    // Process in batches - collect all deletes for a batch, then execute
     for chunk in groups.chunks(batch_size) {
+        // First pass: determine keepers and documents to delete for this batch
+        let mut batch_deletes: Vec<String> = Vec::new();
+        let mut batch_updates: Vec<(String, String)> = Vec::new(); // (keeper_id, dup_id)
+
         for group in chunk {
-            // Get all documents with this content_hash
             #[derive(diesel::QueryableByName, Debug)]
             #[allow(dead_code)]
             struct DocInfo {
@@ -1135,131 +1151,138 @@ pub async fn cmd_db_dedup(
             })?;
 
             if docs.len() < 2 {
+                pb.inc(1);
                 continue;
             }
 
             // Choose keeper based on strategy
             let keeper_idx = match strategy {
-                KeepStrategy::Oldest => 0, // Already sorted by created_at ASC
+                KeepStrategy::Oldest => 0,
                 KeepStrategy::Newest => docs.len() - 1,
-                KeepStrategy::MostComplete => {
-                    // Score by completeness: extracted_text length + has synopsis + has tags
-                    docs.iter()
-                        .enumerate()
-                        .max_by_key(|(_, d)| {
-                            let text_len = d.extracted_text.as_ref().map(|t| t.len()).unwrap_or(0);
-                            let has_synopsis = d.synopsis.is_some() as usize * 1000;
-                            let has_tags = d
-                                .tags
-                                .as_ref()
-                                .map(|t| if t != "[]" { 500 } else { 0 })
-                                .unwrap_or(0);
-                            text_len + has_synopsis + has_tags
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(0)
-                }
+                KeepStrategy::MostComplete => docs
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, d)| {
+                        let text_len = d.extracted_text.as_ref().map(|t| t.len()).unwrap_or(0);
+                        let has_synopsis = d.synopsis.is_some() as usize * 1000;
+                        let has_tags = d
+                            .tags
+                            .as_ref()
+                            .map(|t| if t != "[]" { 500 } else { 0 })
+                            .unwrap_or(0);
+                        text_len + has_synopsis + has_tags
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0),
             };
 
-            let keeper_id = &docs[keeper_idx].id;
-            let to_delete: Vec<&str> = docs
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != keeper_idx)
-                .map(|(_, d)| d.id.as_str())
-                .collect();
-
-            if !dry_run {
-                // Update references in document_analysis_results
-                for dup_id in &to_delete {
-                    let updated: usize = crate::with_conn!(pool, conn, {
-                        diesel::sql_query(
-                            "UPDATE document_analysis_results SET document_id = $1 WHERE document_id = $2",
-                        )
-                        .bind::<diesel::sql_types::Text, _>(keeper_id)
-                        .bind::<diesel::sql_types::Text, _>(*dup_id)
-                        .execute(&mut conn)
-                        .await
-                    })?;
-                    total_refs_updated += updated as u64;
+            let keeper_id = docs[keeper_idx].id.clone();
+            for (i, doc) in docs.into_iter().enumerate() {
+                if i != keeper_idx {
+                    batch_updates.push((keeper_id.clone(), doc.id.clone()));
+                    batch_deletes.push(doc.id);
                 }
-
-                // Update references in document_annotations
-                for dup_id in &to_delete {
-                    let updated: usize = crate::with_conn!(pool, conn, {
-                        diesel::sql_query(
-                            "UPDATE document_annotations SET document_id = $1 WHERE document_id = $2",
-                        )
-                        .bind::<diesel::sql_types::Text, _>(keeper_id)
-                        .bind::<diesel::sql_types::Text, _>(*dup_id)
-                        .execute(&mut conn)
-                        .await
-                    })?;
-                    total_refs_updated += updated as u64;
-                }
-
-                // Delete duplicates (cascades to versions, pages, virtual_files)
-                for dup_id in &to_delete {
-                    // Delete in order respecting foreign keys
-                    // 1. document_pages (references document_versions)
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query("DELETE FROM document_pages WHERE document_id = $1")
-                            .bind::<diesel::sql_types::Text, _>(*dup_id)
-                            .execute(&mut conn)
-                            .await
-                    })?;
-
-                    // 2. virtual_files
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query("DELETE FROM virtual_files WHERE document_id = $1")
-                            .bind::<diesel::sql_types::Text, _>(*dup_id)
-                            .execute(&mut conn)
-                            .await
-                    })?;
-
-                    // 3. document_versions
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query("DELETE FROM document_versions WHERE document_id = $1")
-                            .bind::<diesel::sql_types::Text, _>(*dup_id)
-                            .execute(&mut conn)
-                            .await
-                    })?;
-
-                    // 4. document_analysis_results (should be moved, but delete any remaining)
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query(
-                            "DELETE FROM document_analysis_results WHERE document_id = $1",
-                        )
-                        .bind::<diesel::sql_types::Text, _>(*dup_id)
-                        .execute(&mut conn)
-                        .await
-                    })?;
-
-                    // 5. document_annotations (should be moved, but delete any remaining)
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query("DELETE FROM document_annotations WHERE document_id = $1")
-                            .bind::<diesel::sql_types::Text, _>(*dup_id)
-                            .execute(&mut conn)
-                            .await
-                    })?;
-
-                    // 6. Finally delete the document
-                    crate::with_conn!(pool, conn, {
-                        diesel::sql_query("DELETE FROM documents WHERE id = $1")
-                            .bind::<diesel::sql_types::Text, _>(*dup_id)
-                            .execute(&mut conn)
-                            .await
-                    })?;
-
-                    total_deleted += 1;
-                }
-            } else {
-                total_deleted += to_delete.len() as u64;
             }
 
             pb.inc(1);
-            pb.set_message(format!("deleted: {}", total_deleted));
         }
+
+        if batch_deletes.is_empty() {
+            continue;
+        }
+
+        let delete_count = batch_deletes.len();
+
+        if !dry_run {
+            // Batch update references - group by keeper_id for efficiency
+            let mut updates_by_keeper: HashMap<String, Vec<String>> = HashMap::new();
+            for (keeper_id, dup_id) in batch_updates {
+                updates_by_keeper.entry(keeper_id).or_default().push(dup_id);
+            }
+
+            for (keeper_id, dup_ids) in &updates_by_keeper {
+                let in_clause = build_in_clause(dup_ids);
+
+                // Update analysis_results
+                let query = format!(
+                    "UPDATE document_analysis_results SET document_id = '{}' WHERE document_id IN ({})",
+                    escape_sql(keeper_id),
+                    in_clause
+                );
+                let updated: usize = crate::with_conn!(pool, conn, {
+                    diesel::sql_query(&query).execute(&mut conn).await
+                })?;
+                total_refs_updated += updated as u64;
+
+                // Update annotations
+                let query = format!(
+                    "UPDATE document_annotations SET document_id = '{}' WHERE document_id IN ({})",
+                    escape_sql(keeper_id),
+                    in_clause
+                );
+                let updated: usize = crate::with_conn!(pool, conn, {
+                    diesel::sql_query(&query).execute(&mut conn).await
+                })?;
+                total_refs_updated += updated as u64;
+            }
+
+            // Batch delete in order respecting foreign keys
+            let in_clause = build_in_clause(&batch_deletes);
+
+            // 1. document_pages
+            let query = format!(
+                "DELETE FROM document_pages WHERE document_id IN ({})",
+                in_clause
+            );
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+
+            // 2. virtual_files
+            let query = format!(
+                "DELETE FROM virtual_files WHERE document_id IN ({})",
+                in_clause
+            );
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+
+            // 3. document_versions
+            let query = format!(
+                "DELETE FROM document_versions WHERE document_id IN ({})",
+                in_clause
+            );
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+
+            // 4. document_analysis_results (any remaining)
+            let query = format!(
+                "DELETE FROM document_analysis_results WHERE document_id IN ({})",
+                in_clause
+            );
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+
+            // 5. document_annotations (any remaining)
+            let query = format!(
+                "DELETE FROM document_annotations WHERE document_id IN ({})",
+                in_clause
+            );
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+
+            // 6. documents
+            let query = format!("DELETE FROM documents WHERE id IN ({})", in_clause);
+            crate::with_conn!(pool, conn, {
+                diesel::sql_query(&query).execute(&mut conn).await
+            })?;
+        }
+
+        total_deleted += delete_count as u64;
+        pb.set_message(format!("deleted: {}", total_deleted));
     }
 
     pb.finish_with_message(format!("deleted: {}", total_deleted));
