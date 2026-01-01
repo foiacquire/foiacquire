@@ -70,6 +70,8 @@ impl DieselDocumentRepository {
         let acquired_at = version.acquired_at.to_rfc3339();
         let file_size = version.file_size as i32;
 
+        let earliest_archived_at = version.earliest_archived_at.map(|d| d.to_rfc3339());
+
         with_conn_split!(self.pool,
             sqlite: conn => {
                 diesel::insert_into(document_versions::table)
@@ -88,6 +90,8 @@ impl DieselDocumentRepository {
                         document_versions::server_date
                             .eq(version.server_date.map(|d| d.to_rfc3339()).as_deref()),
                         document_versions::page_count.eq(version.page_count.map(|c| c as i32)),
+                        document_versions::archive_snapshot_id.eq(version.archive_snapshot_id),
+                        document_versions::earliest_archived_at.eq(earliest_archived_at.as_deref()),
                     ))
                     .execute(&mut conn)
                     .await?;
@@ -113,6 +117,8 @@ impl DieselDocumentRepository {
                         document_versions::server_date
                             .eq(version.server_date.map(|d| d.to_rfc3339()).as_deref()),
                         document_versions::page_count.eq(version.page_count.map(|c| c as i32)),
+                        document_versions::archive_snapshot_id.eq(version.archive_snapshot_id),
+                        document_versions::earliest_archived_at.eq(earliest_archived_at.as_deref()),
                     ))
                     .returning(document_versions::id)
                     .get_result(&mut conn)

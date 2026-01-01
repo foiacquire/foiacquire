@@ -185,6 +185,8 @@ pub struct DocumentVersionRecord {
     pub original_filename: Option<String>,
     pub server_date: Option<String>,
     pub page_count: Option<i32>,
+    pub archive_snapshot_id: Option<i32>,
+    pub earliest_archived_at: Option<String>,
 }
 
 /// New document version for insertion.
@@ -202,6 +204,8 @@ pub struct NewDocumentVersion<'a> {
     pub original_filename: Option<&'a str>,
     pub server_date: Option<&'a str>,
     pub page_count: Option<i32>,
+    pub archive_snapshot_id: Option<i32>,
+    pub earliest_archived_at: Option<&'a str>,
 }
 
 /// Document page record from the database.

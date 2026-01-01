@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+pub mod archive;
 pub mod browser;
 pub mod config;
 pub mod configurable;
@@ -14,6 +15,7 @@ pub mod rate_limit_redis;
 pub mod rate_limit_sqlite;
 pub mod rate_limiter;
 
+pub use archive::{ArchiveError, ArchiveRegistry, ArchiveSource, SnapshotInfo, WaybackSource};
 #[cfg(feature = "browser")]
 pub use browser::BrowserFetcher;
 #[cfg(feature = "browser")]
@@ -70,6 +72,10 @@ pub struct ScraperResult {
     pub original_filename: Option<String>,
     /// Server date from Last-Modified header parsed as DateTime.
     pub server_date: Option<DateTime<Utc>>,
+    /// Archive snapshot ID if this content was fetched from an archive.
+    pub archive_snapshot_id: Option<i32>,
+    /// When the archive captured this content (for provenance).
+    pub archive_captured_at: Option<DateTime<Utc>>,
 }
 
 impl ScraperResult {
@@ -87,6 +93,8 @@ impl ScraperResult {
             not_modified: false,
             original_filename: None,
             server_date: None,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
         }
     }
 
@@ -104,6 +112,36 @@ impl ScraperResult {
             not_modified: true,
             original_filename: None,
             server_date: None,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
+        }
+    }
+
+    /// Create a scraper result from an archive snapshot.
+    ///
+    /// Uses the archive's capture date as the server date for provenance.
+    pub fn from_archive(
+        url: String,
+        title: String,
+        content: Vec<u8>,
+        mime_type: String,
+        snapshot_id: i32,
+        captured_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            url,
+            title,
+            content: Some(content),
+            mime_type,
+            metadata: serde_json::json!({"from_archive": true}),
+            fetched_at: Utc::now(),
+            etag: None,
+            last_modified: None,
+            not_modified: false,
+            original_filename: None,
+            server_date: Some(captured_at), // Use archive capture time as server date
+            archive_snapshot_id: Some(snapshot_id),
+            archive_captured_at: Some(captured_at),
         }
     }
 }

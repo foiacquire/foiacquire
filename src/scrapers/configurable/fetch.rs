@@ -77,6 +77,8 @@ impl ConfigurableScraper {
             not_modified: false,
             original_filename,
             server_date,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
         };
 
         // Update metadata
@@ -136,6 +138,8 @@ impl ConfigurableScraper {
             not_modified: false,
             original_filename: None,
             server_date: None,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
         })
     }
 
@@ -187,6 +191,8 @@ impl ConfigurableScraper {
             not_modified: false,
             original_filename: filename,
             server_date: None,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
         })
     }
 
@@ -296,6 +302,8 @@ impl ConfigurableScraper {
             not_modified: false,
             original_filename,
             server_date,
+            archive_snapshot_id: None,
+            archive_captured_at: None,
         })
     }
 }

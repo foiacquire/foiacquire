@@ -107,6 +107,38 @@ diesel::table! {
         original_filename -> Nullable<Text>,
         server_date -> Nullable<Text>,
         page_count -> Nullable<Integer>,
+        archive_snapshot_id -> Nullable<Integer>,
+        earliest_archived_at -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    archive_snapshots (id) {
+        id -> Integer,
+        service -> Text,
+        original_url -> Text,
+        archive_url -> Text,
+        captured_at -> Text,
+        discovered_at -> Text,
+        http_status -> Nullable<Integer>,
+        mimetype -> Nullable<Text>,
+        content_length -> Nullable<BigInt>,
+        digest -> Nullable<Text>,
+        metadata -> Text,
+    }
+}
+
+diesel::table! {
+    archive_checks (id) {
+        id -> Integer,
+        document_version_id -> Integer,
+        archive_source -> Text,
+        url_checked -> Text,
+        checked_at -> Text,
+        snapshots_found -> Integer,
+        matching_snapshots -> Integer,
+        result -> Text,
+        error_message -> Nullable<Text>,
     }
 }
 
@@ -194,6 +226,7 @@ diesel::table! {
 
 diesel::joinable!(document_pages -> documents (document_id));
 diesel::joinable!(document_versions -> documents (document_id));
+diesel::joinable!(document_versions -> archive_snapshots (archive_snapshot_id));
 diesel::joinable!(documents -> sources (source_id));
 diesel::joinable!(virtual_files -> documents (document_id));
 
@@ -201,7 +234,11 @@ diesel::joinable!(document_analysis_results -> documents (document_id));
 diesel::joinable!(document_analysis_results -> document_pages (page_id));
 diesel::joinable!(document_analysis_results -> document_versions (version_id));
 
+diesel::joinable!(archive_checks -> document_versions (document_version_id));
+
 diesel::allow_tables_to_appear_in_same_query!(
+    archive_checks,
+    archive_snapshots,
     configuration_history,
     crawl_config,
     crawl_requests,
