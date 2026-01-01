@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+#[cfg(feature = "browser")]
 use std::path::PathBuf;
 
 #[cfg(feature = "browser")]
@@ -9,6 +10,7 @@ use std::sync::Arc;
 #[cfg(feature = "browser")]
 use std::time::Duration;
 
+#[cfg(feature = "browser")]
 use anyhow::Result;
 #[cfg(feature = "browser")]
 use tracing::{debug, info, warn};
@@ -18,6 +20,7 @@ use chromiumoxide::cdp::browser_protocol::network::CookieParam;
 #[cfg(feature = "browser")]
 use chromiumoxide::Page;
 
+#[cfg(feature = "browser")]
 use super::types::{BrowserCookie, BrowserFetchResponse};
 
 #[cfg(feature = "browser")]

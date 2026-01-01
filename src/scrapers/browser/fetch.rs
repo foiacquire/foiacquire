@@ -5,6 +5,7 @@
 #[cfg(feature = "browser")]
 use std::time::Duration;
 
+#[cfg(feature = "browser")]
 use anyhow::Result;
 #[cfg(feature = "browser")]
 use tracing::{debug, warn};
@@ -16,8 +17,11 @@ use chromiumoxide::cdp::browser_protocol::page::NavigateParams;
 #[cfg(feature = "browser")]
 use chromiumoxide::Page;
 
+#[cfg(feature = "browser")]
 use super::config::BrowserEngineType;
+#[cfg(feature = "browser")]
 use super::stealth::STEALTH_SCRIPTS;
+#[cfg(feature = "browser")]
 use super::types::{BrowserCookie, BrowserFetchResponse};
 
 #[cfg(feature = "browser")]

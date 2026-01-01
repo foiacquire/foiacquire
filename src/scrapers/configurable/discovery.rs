@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "browser")]
 use super::super::browser::BrowserEngineConfig;
 use super::super::config::ScraperConfig;
 use super::super::HttpClient;

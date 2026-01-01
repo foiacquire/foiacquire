@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "browser")]
 use super::browser::BrowserEngineConfig;
 use super::config::ScraperConfig;
 use super::rate_limiter::RateLimiter;

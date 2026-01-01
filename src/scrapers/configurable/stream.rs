@@ -119,7 +119,9 @@ impl ConfigurableScraper {
         #[cfg(feature = "browser")]
         let browser_config = self.browser_config.clone();
 
+        #[cfg(feature = "browser")]
         let binary_fetch = self.config.fetch.binary_fetch;
+        #[cfg(feature = "browser")]
         let context_url = self
             .config
             .base_url
@@ -132,6 +134,7 @@ impl ConfigurableScraper {
             let client = self.client.clone();
             #[cfg(feature = "browser")]
             let browser_config = browser_config.clone();
+            #[cfg(feature = "browser")]
             let context_url = context_url.clone();
 
             let handle = tokio::spawn(async move {

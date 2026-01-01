@@ -5,9 +5,12 @@ use std::sync::Arc;
 
 use regex::Regex;
 use scraper::{Html, Selector};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use url::Url;
 
+#[cfg(feature = "browser")]
+use tracing::debug;
+#[cfg(feature = "browser")]
 use super::super::browser::BrowserEngineConfig;
 #[cfg(feature = "browser")]
 use super::super::browser::BrowserFetcher;
@@ -477,7 +480,7 @@ impl ConfigurableScraper {
     pub(crate) async fn discover_html_crawl_streaming_no_browser(
         config: &ScraperConfig,
         client: &HttpClient,
-        source_id: &str,
+        _source_id: &str,
         _crawl_repo: &Option<Arc<DieselCrawlRepository>>,
         url_tx: &tokio::sync::mpsc::Sender<String>,
     ) {

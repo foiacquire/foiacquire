@@ -15,6 +15,7 @@ mod stealth;
 mod types;
 
 pub use config::{default_headless, default_timeout, BrowserEngineConfig, BrowserEngineType};
+#[cfg(feature = "browser")]
 pub use pool::{BrowserPool, BrowserPoolConfig};
 pub use selection::SelectionStrategyType;
 #[allow(unused_imports)]

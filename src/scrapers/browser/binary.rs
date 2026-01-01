@@ -7,6 +7,7 @@ use std::time::Duration;
 
 #[cfg(feature = "browser")]
 use anyhow::Context;
+#[cfg(feature = "browser")]
 use anyhow::Result;
 #[cfg(feature = "browser")]
 use tracing::{debug, info};
@@ -16,7 +17,9 @@ use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
 #[cfg(feature = "browser")]
 use chromiumoxide::Page;
 
+#[cfg(feature = "browser")]
 use super::config::BrowserEngineType;
+#[cfg(feature = "browser")]
 use super::types::BinaryFetchResponse;
 
 #[cfg(feature = "browser")]
