@@ -12,6 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Settings;
 use crate::repository::migration::ProgressCallback;
+use crate::repository::migrations;
 use crate::repository::pool::SqlitePool;
 use crate::repository::util::{is_postgres_url, redact_url_password, validate_database_url};
 use crate::repository::{DatabaseExporter, DatabaseImporter, SqliteMigrator};
@@ -79,7 +80,7 @@ pub async fn cmd_migrate(settings: &Settings, check: bool, force: bool) -> anyho
     }
 
     println!("\n{} Running migrations...", style("→").cyan());
-    match ctx.init_schema().await {
+    match migrations::run_migrations(&settings.database_url()).await {
         Ok(()) => {
             println!("{} Migration complete!", style("✓").green());
         }
