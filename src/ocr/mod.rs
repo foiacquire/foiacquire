@@ -32,6 +32,7 @@ mod deepseek;
 mod email;
 mod extractor;
 mod model_utils;
+mod pdf_utils;
 mod tesseract;
 mod url_finder;
 
