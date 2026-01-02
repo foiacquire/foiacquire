@@ -133,14 +133,20 @@ impl SitemapSource {
         for line in xml.lines() {
             if let Some(start) = line.find("<loc>") {
                 if let Some(end) = line.find("</loc>") {
-                    let url = &line[start + 5..end];
-                    let url = url
-                        .replace("&amp;", "&")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'");
-                    locs.push(url);
+                    // Bounds check: end must be after start + 5 (length of "<loc>")
+                    let content_start = start + 5;
+                    if end > content_start {
+                        let url = &line[content_start..end];
+                        let url = url
+                            .replace("&amp;", "&")
+                            .replace("&lt;", "<")
+                            .replace("&gt;", ">")
+                            .replace("&quot;", "\"")
+                            .replace("&apos;", "'");
+                        if !url.is_empty() {
+                            locs.push(url);
+                        }
+                    }
                 }
             }
         }
@@ -158,15 +164,21 @@ impl SitemapSource {
             let line = line.trim();
             if let Some(start) = line.find("<loc>") {
                 if let Some(end) = line.find("</loc>") {
-                    let url = &line[start + 5..end];
-                    // Unescape XML entities
-                    let url = url
-                        .replace("&amp;", "&")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'");
-                    urls.push(url);
+                    // Bounds check: end must be after start + 5 (length of "<loc>")
+                    let content_start = start + 5;
+                    if end > content_start {
+                        let url = &line[content_start..end];
+                        // Unescape XML entities
+                        let url = url
+                            .replace("&amp;", "&")
+                            .replace("&lt;", "<")
+                            .replace("&gt;", ">")
+                            .replace("&quot;", "\"")
+                            .replace("&apos;", "'");
+                        if !url.is_empty() {
+                            urls.push(url);
+                        }
+                    }
                 }
             }
         }

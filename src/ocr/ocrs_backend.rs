@@ -7,13 +7,13 @@
 //! https://ocrs-models.s3-accelerate.amazonaws.com/
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Instant;
 use tempfile::TempDir;
 
 use super::backend::{OcrBackend, OcrBackendType, OcrConfig, OcrError, OcrResult};
 use super::model_utils::{ensure_model_file, ModelDirConfig, ModelSpec};
+use super::pdf_utils;
 
 /// Global cached OcrEngine instance (initialized once, reused for all OCR calls).
 /// OcrEngine is Send+Sync and its methods take &self, so no Mutex needed.
@@ -151,50 +151,6 @@ impl OcrsBackend {
 
         Ok(text)
     }
-
-    /// Convert a PDF page to an image.
-    fn pdf_page_to_image(
-        &self,
-        pdf_path: &Path,
-        page: u32,
-        output_dir: &Path,
-    ) -> Result<std::path::PathBuf, OcrError> {
-        let page_str = page.to_string();
-        let output_prefix = output_dir.join("page");
-
-        let status = Command::new("pdftoppm")
-            .args(["-png", "-r", "300", "-f", &page_str, "-l", &page_str])
-            .arg(pdf_path)
-            .arg(&output_prefix)
-            .status();
-
-        match status {
-            Ok(s) if s.success() => self.find_page_image(output_dir, page).ok_or_else(|| {
-                OcrError::OcrFailed(format!("No image generated for page {}", page))
-            }),
-            Ok(_) => Err(OcrError::OcrFailed(
-                "pdftoppm failed to convert PDF page".to_string(),
-            )),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(OcrError::BackendNotAvailable(
-                    "pdftoppm not found (install poppler-utils)".to_string(),
-                ))
-            }
-            Err(e) => Err(OcrError::Io(e)),
-        }
-    }
-
-    /// Find the image file for a specific page number.
-    fn find_page_image(&self, temp_path: &Path, page_num: u32) -> Option<std::path::PathBuf> {
-        for digits in [2, 3, 4] {
-            let filename = format!("page-{:0width$}.png", page_num, width = digits);
-            let path = temp_path.join(&filename);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-        None
-    }
 }
 
 impl Default for OcrsBackend {
@@ -243,7 +199,7 @@ impl OcrBackend for OcrsBackend {
 
         // Create temp directory for the image
         let temp_dir = TempDir::new()?;
-        let image_path = self.pdf_page_to_image(pdf_path, page, temp_dir.path())?;
+        let image_path = pdf_utils::pdf_page_to_image(pdf_path, page, temp_dir.path())?;
 
         // Run OCR on the image
         let text = self.run_ocrs(&image_path)?;

@@ -5,10 +5,24 @@ use super::super::config::UrlExtractionConfig;
 /// Resolve a path to a full URL, handling both absolute and relative paths.
 pub fn resolve_url(base_url: &str, path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
+        return path.to_string();
+    }
+
+    // Use proper URL joining to handle edge cases
+    if let Ok(base) = url::Url::parse(base_url) {
+        if let Ok(resolved) = base.join(path) {
+            return resolved.to_string();
+        }
+    }
+
+    // Fallback: manual joining with proper slash handling
+    let base = base_url.trim_end_matches('/');
+    let path = if path.starts_with('/') {
         path.to_string()
     } else {
-        format!("{}{}", base_url, path)
-    }
+        format!("/{}", path)
+    };
+    format!("{}{}", base, path)
 }
 
 /// Extract a value from nested JSON using dot-notation path.
@@ -145,12 +159,19 @@ mod tests {
 
     #[test]
     fn test_resolve_url_relative() {
+        // Absolute path from domain root
         assert_eq!(
             resolve_url("https://example.com", "/docs/file.pdf"),
             "https://example.com/docs/file.pdf"
         );
+        // Absolute path resolves from domain root, not base path
         assert_eq!(
             resolve_url("https://example.com/api", "/docs/file.pdf"),
+            "https://example.com/docs/file.pdf"
+        );
+        // Relative path (no leading slash) resolves from base
+        assert_eq!(
+            resolve_url("https://example.com/api/", "docs/file.pdf"),
             "https://example.com/api/docs/file.pdf"
         );
     }

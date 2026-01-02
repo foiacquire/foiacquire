@@ -836,7 +836,9 @@ pub async fn cmd_analyze(
             .await?;
 
         // Wait for event handler to finish
-        let _ = event_handler.await;
+        if let Err(e) = event_handler.await {
+            tracing::warn!("Event handler task failed: {}", e);
+        }
 
         if !daemon {
             break;

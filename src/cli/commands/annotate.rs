@@ -230,7 +230,9 @@ pub async fn cmd_annotate(
         let _result = service.annotate(source_id, limit, event_tx).await?;
 
         // Wait for event handler to finish
-        let _ = event_handler.await;
+        if let Err(e) = event_handler.await {
+            tracing::warn!("Event handler task failed: {}", e);
+        }
 
         if !daemon {
             break;

@@ -142,12 +142,22 @@ impl ArchiveExtractor {
         // Create temp directory
         let temp_dir = TempDir::new()?;
 
-        // Extract filename for the temp file
+        // Extract filename for the temp file, sanitizing to prevent path traversal
         let filename = entry_path
             .rsplit('/')
             .next()
             .unwrap_or(entry_path)
+            .replace('\\', "_") // Remove backslashes
+            .replace("..", "_") // Remove parent directory references
+            .trim_start_matches('.') // Remove leading dots (hidden files)
             .to_string();
+
+        // Ensure we have a valid filename after sanitization
+        let filename = if filename.is_empty() {
+            "extracted_file".to_string()
+        } else {
+            filename
+        };
 
         let file_path = temp_dir.path().join(&filename);
 
