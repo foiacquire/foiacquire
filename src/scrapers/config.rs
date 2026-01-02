@@ -1,7 +1,8 @@
 //! Scraper configuration types.
 //!
 //! These structs define the JSON-configurable behavior for scrapers,
-//! including discovery strategies, browser settings, and fetch options.
+//! including discovery strategies, browser settings, fetch options,
+//! and per-source privacy overrides.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,7 @@ use super::browser::{
     SelectionStrategyType,
 };
 use crate::discovery::config::ExternalDiscoveryConfig;
+use crate::privacy::SourcePrivacyConfig;
 
 /// Scraper configuration from JSON.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -38,6 +40,11 @@ pub struct ScraperConfig {
     /// When set, the scraper will use a headless browser instead of HTTP requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserConfig>,
+    /// Per-source privacy configuration.
+    /// Allows overriding global privacy settings for this specific source.
+    /// Example: `"privacy": { "direct": true }` to skip Tor for trusted internal sources.
+    #[serde(default, skip_serializing_if = "SourcePrivacyConfig::is_default")]
+    pub privacy: SourcePrivacyConfig,
 }
 
 impl ScraperConfig {

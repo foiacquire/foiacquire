@@ -9,6 +9,7 @@ use crate::cli::commands::RateLimitBackendType;
 use crate::config::{Config, Settings};
 use crate::llm::LlmClient;
 use crate::models::{ScraperStats, ServiceStatus, Source, SourceType};
+use crate::privacy::PrivacyConfig;
 use crate::scrapers::{
     ConfigurableScraper, DieselRateLimitBackend, InMemoryRateLimitBackend, RateLimiter,
 };
@@ -38,6 +39,7 @@ pub async fn cmd_scrape(
     interval: u64,
     reload: ReloadMode,
     rate_limit_backend_type: RateLimitBackendType,
+    privacy_config: &PrivacyConfig,
 ) -> anyhow::Result<()> {
     // Set up config watcher for stop-process and inplace modes
     // Try file watching first, fall back to DB polling if no config file
@@ -178,6 +180,7 @@ pub async fn cmd_scrape(
                 line,
                 tui_guard.is_active(),
                 Some(rate_limiter.clone()),
+                privacy_config,
             )
             .await;
 
@@ -214,6 +217,7 @@ pub async fn cmd_scrape(
                 let line = source_lines.get(source_id).copied();
                 let tui_active = tui_guard.is_active();
                 let rate_limiter_clone = rate_limiter.clone();
+                let privacy_config_clone = privacy_config.clone();
                 let handle = tokio::spawn(async move {
                     cmd_scrape_single_tui(
                         &settings,
@@ -224,6 +228,7 @@ pub async fn cmd_scrape(
                         line,
                         tui_active,
                         Some(rate_limiter_clone),
+                        &privacy_config_clone,
                     )
                     .await
                 });
@@ -357,6 +362,7 @@ async fn cmd_scrape_single_tui(
     status_line: Option<u16>,
     tui_active: bool,
     rate_limiter: Option<Arc<RateLimiter>>,
+    privacy_config: &PrivacyConfig,
 ) -> anyhow::Result<()> {
     settings.ensure_directories()?;
 
@@ -508,14 +514,16 @@ async fn cmd_scrape_single_tui(
     let refresh_ttl_days = config.get_refresh_ttl_days(source_id);
     // Clone rate limiter - RateLimiter uses Arc internally so cloning shares state
     let limiter_opt = rate_limiter.as_ref().map(|r| (**r).clone());
-    let scraper = ConfigurableScraper::with_rate_limiter(
+    let scraper = ConfigurableScraper::with_rate_limiter_and_privacy(
         source.clone(),
         scraper_config,
         Some(crawl_repo.clone()),
         Duration::from_millis(settings.request_delay_ms),
         refresh_ttl_days,
         limiter_opt,
-    );
+        Some(privacy_config),
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create scraper: {}", e))?;
 
     let stream = scraper.scrape_stream(workers).await;
     let mut rx = stream.receiver;

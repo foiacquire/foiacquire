@@ -19,13 +19,34 @@ use crate::models::{DocumentStatus, ServiceStatus};
 use crate::repository::util::redact_url_password;
 
 /// Show overall system status.
-pub async fn cmd_status(settings: &Settings, live: bool, interval: u64) -> anyhow::Result<()> {
+pub async fn cmd_status(
+    settings: &Settings,
+    url: Option<String>,
+    source_id: Option<String>,
+    live: bool,
+    interval: u64,
+    json: bool,
+) -> anyhow::Result<()> {
+    // If URL is provided (via --url or FOIA_API_URL), fetch from API
+    if let Some(base_url) = url {
+        return fetch_and_display_api_status(&base_url, source_id.as_deref(), json).await;
+    }
+
+    // Otherwise use local database
     if !settings.database_exists() {
         println!(
-            "{} System not initialized. Run 'foiacquire init' first.",
+            "{} System not initialized. Run 'foia init' first.",
             style("!").yellow()
         );
+        println!(
+            "  Or set {} to connect to a remote server.",
+            style("FOIA_API_URL").cyan()
+        );
         return Ok(());
+    }
+
+    if json {
+        return display_status_json(settings, source_id.as_deref()).await;
     }
 
     if live {
@@ -33,6 +54,167 @@ pub async fn cmd_status(settings: &Settings, live: bool, interval: u64) -> anyho
     } else {
         display_status_simple(settings).await
     }
+}
+
+/// Fetch status from API and display it.
+async fn fetch_and_display_api_status(
+    base_url: &str,
+    source_id: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+
+    let url = if let Some(sid) = source_id {
+        format!("{}/api/status/{}", base_url.trim_end_matches('/'), sid)
+    } else {
+        format!("{}/api/status", base_url.trim_end_matches('/'))
+    };
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", url, e))?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Server returned {}: {}", response.status(), url);
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse response: {}", e))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+    } else {
+        display_api_status(&data, base_url);
+    }
+
+    Ok(())
+}
+
+/// Display API status response in human-readable format.
+fn display_api_status(data: &serde_json::Value, url: &str) {
+    let separator = "─".repeat(70);
+
+    println!();
+    println!("{:<50} {}", style("foia status").bold(), style(url).dim());
+    println!("{}", separator);
+
+    // Documents section
+    if let Some(docs) = data.get("documents") {
+        println!("{}", style("DOCUMENTS").cyan().bold());
+        if let Some(total) = docs.get("total").and_then(|v| v.as_u64()) {
+            println!("  {:<20} {:>10}", "Total:", format_number(total));
+        }
+        if let Some(needing_ocr) = docs.get("needing_ocr").and_then(|v| v.as_u64()) {
+            println!(
+                "  {:<20} {:>10}",
+                "Needing OCR:",
+                format_number(needing_ocr)
+            );
+        }
+        if let Some(needing_sum) = docs.get("needing_summarization").and_then(|v| v.as_u64()) {
+            println!(
+                "  {:<20} {:>10}",
+                "Needing Summary:",
+                format_number(needing_sum)
+            );
+        }
+        println!();
+    }
+
+    // Crawl section
+    if let Some(crawl) = data.get("crawl") {
+        println!("{}", style("CRAWL QUEUE").cyan().bold());
+        if let Some(pending) = crawl.get("total_pending").and_then(|v| v.as_u64()) {
+            println!("  {:<20} {:>10}", "Pending:", format_number(pending));
+        }
+        if let Some(failed) = crawl.get("total_failed").and_then(|v| v.as_u64()) {
+            println!("  {:<20} {:>10}", "Failed:", format_number(failed));
+        }
+        if let Some(discovered) = crawl.get("total_discovered").and_then(|v| v.as_u64()) {
+            println!("  {:<20} {:>10}", "Discovered:", format_number(discovered));
+        }
+        println!();
+
+        // Sources
+        if let Some(sources) = crawl.get("sources").and_then(|v| v.as_array()) {
+            if !sources.is_empty() {
+                println!(
+                    "{:<26} {:>10} {:>10} {:>10}",
+                    style("SOURCES").cyan().bold(),
+                    "Pending",
+                    "Fetched",
+                    "Failed"
+                );
+                for source in sources {
+                    let id = source
+                        .get("source_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let pending = source.get("pending").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let fetched = source.get("fetched").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let failed = source.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+                    println!(
+                        "  {:<24} {:>10} {:>10} {:>10}",
+                        truncate_string(id, 24),
+                        format_number(pending),
+                        format_number(fetched),
+                        format_number(failed),
+                    );
+                }
+                println!();
+            }
+        }
+    }
+
+    // Type stats
+    if let Some(types) = data.get("type_stats").and_then(|v| v.as_array()) {
+        if !types.is_empty() {
+            println!("{}", style("FILE TYPES").cyan().bold());
+            for t in types.iter().take(10) {
+                let mime = t.get("mime_type").and_then(|v| v.as_str()).unwrap_or("?");
+                let count = t.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!(
+                    "  {:<40} {:>10}",
+                    truncate_string(mime, 40),
+                    format_number(count)
+                );
+            }
+            println!();
+        }
+    }
+
+    println!("{}", separator);
+}
+
+/// Display status as JSON from local database.
+async fn display_status_json(settings: &Settings, _source_id: Option<&str>) -> anyhow::Result<()> {
+    let data = fetch_status_data(settings).await?;
+
+    let json = serde_json::json!({
+        "documents": {
+            "total": data.total_docs,
+            "by_status": data.status_counts,
+        },
+        "crawl": {
+            "pending_downloads": data.pending_downloads,
+        },
+        "sources": data.sources.iter().map(|s| serde_json::json!({
+            "source_id": s.id,
+            "total": s.total,
+            "pending": s.pending,
+            "downloaded": s.downloaded,
+            "ocr_done": s.ocr_done,
+        })).collect::<Vec<_>>(),
+        "database": data.database_url,
+        "data_dir": data.data_dir,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&json)?);
+    Ok(())
 }
 
 /// Status data collected from the database.
@@ -119,7 +301,7 @@ async fn display_status_simple(settings: &Settings) -> anyhow::Result<()> {
     println!();
     println!(
         "{:<50} Last updated: {}",
-        style("foiacquire status").bold(),
+        style("foia status").bold(),
         data.last_updated
     );
     println!("{}", separator);
@@ -333,7 +515,7 @@ fn draw_status(frame: &mut Frame, data: &StatusData) {
 
     // Header
     let header = Paragraph::new(format!(
-        "foiacquire status                                    Last updated: {}",
+        "foia status                                          Last updated: {}",
         data.last_updated
     ))
     .style(Style::default().bold())

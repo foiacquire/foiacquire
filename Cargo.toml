@@ -6,13 +6,18 @@ authors = ["monokrome"]
 description = "FOIA document acquisition and research system"
 license = "MIT"
 repository = "https://github.com/monokrome/foiacquire"
+autobins = false
+
+[[bin]]
+name = "foia"
+path = "src/main.rs"
 
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # HTTP client (using rustls for cross-platform builds without OpenSSL)
-reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "gzip", "brotli", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "gzip", "brotli", "rustls-tls", "socks"] }
 
 # HTML parsing
 scraper = "0.20"
@@ -22,8 +27,8 @@ diesel = { version = "2", features = ["sqlite", "chrono", "r2d2"] }
 diesel-async = { version = "0.5", features = ["sqlite", "deadpool", "sync-connection-wrapper"] }
 diesel_migrations = "2"
 deadpool = "0.12"
-# Bundle SQLite for static musl builds
-libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+# Bundle SQLite for static musl builds (0.35 for arti compatibility)
+libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -37,7 +42,7 @@ prefer = "0.2"
 dotenvy = "0.15"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Hashing
 sha2 = "0.10"
@@ -134,6 +139,10 @@ lapin = { version = "2", optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 futures-util = { version = "0.3", optional = true }
 bytes = { version = "1", optional = true }
+
+# Embedded Tor via Arti (optional, for privacy-by-default)
+arti-client = { version = "0.37", default-features = false, features = ["tokio", "rustls", "pt-client"], optional = true }
+tor-rtcompat = { version = "0.37", default-features = false, features = ["tokio", "rustls"], optional = true }
 ratatui = "0.30.0"
 serde_yaml = "0.9.34"
 hostname = "0.4.2"
@@ -148,10 +157,8 @@ amqp-broker = ["lapin"]
 ocr-ocrs = ["ocrs", "rten", "rten-imageproc", "image"]
 ocr-paddle = ["paddle-ocr-rs", "image"]
 ocr-all = ["ocr-ocrs", "ocr-paddle"]
-
-[[bin]]
-name = "foiacquire"
-path = "src/main.rs"
+# Embedded Tor via Arti for privacy-by-default networking
+embedded-tor = ["arti-client", "tor-rtcompat"]
 
 [profile.release]
 lto = true

@@ -7,6 +7,7 @@ use console::style;
 use super::helpers::{process_get_response_for_refresh, RefreshResult};
 use crate::cli::commands::helpers::truncate;
 use crate::config::Settings;
+use crate::privacy::PrivacyConfig;
 
 /// Refresh metadata for documents.
 pub async fn cmd_refresh(
@@ -15,6 +16,7 @@ pub async fn cmd_refresh(
     workers: usize,
     limit: usize,
     force: bool,
+    privacy_config: &PrivacyConfig,
 ) -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Semaphore;
@@ -93,13 +95,22 @@ pub async fn cmd_refresh(
         let redownloaded = redownloaded.clone();
         let semaphore = semaphore.clone();
         let pb = pb.clone();
+        let privacy = privacy_config.clone();
 
         let handle = tokio::spawn(async move {
-            let client = crate::scrapers::HttpClient::new(
+            let client = match crate::scrapers::HttpClient::with_privacy(
                 "refresh",
                 std::time::Duration::from_secs(30),
                 std::time::Duration::from_millis(100),
-            );
+                None,
+                &privacy,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("Failed to create HTTP client: {}", e);
+                    return;
+                }
+            };
 
             loop {
                 let _permit = semaphore.acquire().await.unwrap();

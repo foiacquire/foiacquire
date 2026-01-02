@@ -2,6 +2,11 @@
 //!
 //! When `BROWSER_URL` environment variable is set, requests are routed through
 //! the stealth browser for bot detection bypass.
+//!
+//! Privacy features:
+//! - Routes requests through SOCKS proxy when `SOCKS_PROXY` env var is set
+//! - Supports Tor with obfuscation (default) or direct Tor
+//! - Can be configured to bypass proxy for specific sources
 
 #![allow(dead_code)]
 
@@ -18,13 +23,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Proxy, StatusCode};
 #[cfg(feature = "browser")]
 use tracing::debug;
 
 use super::rate_limiter::RateLimiter;
 use super::InMemoryRateLimitBackend;
 use crate::models::{CrawlRequest, CrawlUrl, UrlStatus};
+use crate::privacy::{PrivacyConfig, PrivacyMode};
 use crate::repository::DieselCrawlRepository;
 
 #[cfg(feature = "browser")]
@@ -35,6 +41,11 @@ use super::browser::{BrowserPool, BrowserPoolConfig};
 /// When browser is configured (via `BROWSER_URL` env var), requests are
 /// automatically routed through the browser pool. Multiple browsers can be
 /// specified with comma-separated URLs for load balancing and failover.
+///
+/// Privacy routing:
+/// - When `SOCKS_PROXY` is set, routes through that proxy
+/// - When privacy config specifies Tor, routes through embedded Arti (if available)
+/// - When direct mode is enabled, makes direct connections (with security warning)
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client,
@@ -43,6 +54,7 @@ pub struct HttpClient {
     request_delay: Duration,
     referer: Option<String>,
     rate_limiter: RateLimiter,
+    privacy_mode: PrivacyMode,
     #[cfg(feature = "browser")]
     browser_pool: Option<Arc<BrowserPool>>,
 }
@@ -61,12 +73,96 @@ impl HttpClient {
         })
     }
 
-    /// Create a new HTTP client.
+    /// Build a reqwest Client with the appropriate proxy settings.
+    ///
+    /// # Errors
+    /// Returns an error if Tor mode is requested but no Tor is available
+    /// (neither embedded Arti nor external SOCKS_PROXY). This enforces
+    /// fail-closed security - we refuse to silently fall back to direct connections.
+    fn build_client(
+        user_agent: &str,
+        timeout: Duration,
+        privacy_config: Option<&PrivacyConfig>,
+    ) -> Result<(Client, PrivacyMode), String> {
+        let mut builder = Client::builder()
+            .user_agent(user_agent)
+            .timeout(timeout)
+            .gzip(true)
+            .brotli(true);
+
+        let mode = privacy_config
+            .map(|c| c.mode())
+            .unwrap_or(PrivacyMode::Direct);
+
+        // Configure proxy based on privacy mode
+        match &mode {
+            PrivacyMode::ExternalProxy => {
+                // Use external SOCKS proxy from SOCKS_PROXY env var
+                if let Some(config) = privacy_config {
+                    if let Some(proxy_url) = config.proxy_url() {
+                        // Validate SOCKS URL scheme
+                        if !proxy_url.starts_with("socks5://")
+                            && !proxy_url.starts_with("socks5h://")
+                        {
+                            return Err(format!(
+                                "Invalid SOCKS proxy URL: '{}'. Must start with socks5:// or socks5h://",
+                                proxy_url
+                            ));
+                        }
+                        let proxy = Proxy::all(proxy_url).map_err(|e| {
+                            format!("Invalid SOCKS proxy URL '{}': {}", proxy_url, e)
+                        })?;
+                        builder = builder.proxy(proxy);
+                    } else {
+                        return Err("ExternalProxy mode but no proxy URL configured".to_string());
+                    }
+                } else {
+                    return Err("ExternalProxy mode but no privacy config provided".to_string());
+                }
+            }
+            PrivacyMode::TorObfuscated(_) | PrivacyMode::TorDirect => {
+                // Fail-closed: Tor mode requires Tor to be available
+                // Check if embedded Arti is ready
+                #[cfg(feature = "embedded-tor")]
+                {
+                    if let Some(proxy_url) = crate::privacy::get_arti_socks_url() {
+                        let proxy = Proxy::all(&proxy_url)
+                            .map_err(|e| format!("Failed to configure Arti proxy: {}", e))?;
+                        builder = builder.proxy(proxy);
+                    } else {
+                        return Err("Tor mode requested but Arti is not bootstrapped. \
+                             Either wait for Arti to initialize, set SOCKS_PROXY for an external \
+                             Tor instance, or use --direct to disable privacy (not recommended)."
+                            .to_string());
+                    }
+                }
+                #[cfg(not(feature = "embedded-tor"))]
+                {
+                    return Err("Tor mode requested but embedded Tor is not available \
+                         (compiled without 'embedded-tor' feature). Either set SOCKS_PROXY \
+                         to an external Tor instance, or use --direct to disable privacy \
+                         (not recommended)."
+                        .to_string());
+                }
+            }
+            PrivacyMode::Direct => {
+                // No proxy - direct connection (user explicitly opted out of privacy)
+            }
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        Ok((client, mode))
+    }
+
+    /// Create a new HTTP client with direct connections (no privacy routing).
     pub fn new(source_id: &str, timeout: Duration, request_delay: Duration) -> Self {
         Self::with_user_agent(source_id, timeout, request_delay, None)
     }
 
     /// Create a new HTTP client with custom user agent configuration.
+    /// Uses direct connections (no privacy routing).
     /// - None: Use default FOIAcquire user agent
     /// - Some("impersonate"): Use random real browser user agent
     /// - Some(custom): Use custom user agent string
@@ -77,13 +173,9 @@ impl HttpClient {
         user_agent_config: Option<&str>,
     ) -> Self {
         let user_agent = resolve_user_agent(user_agent_config);
-        let client = Client::builder()
-            .user_agent(&user_agent)
-            .timeout(timeout)
-            .gzip(true)
-            .brotli(true)
-            .build()
-            .expect("Failed to create HTTP client");
+        // None privacy config = Direct mode, which never fails
+        let (client, privacy_mode) = Self::build_client(&user_agent, timeout, None)
+            .expect("Direct mode client creation should never fail");
 
         // Default in-memory backend with request_delay as base
         let backend = Arc::new(InMemoryRateLimitBackend::new(
@@ -96,9 +188,45 @@ impl HttpClient {
             request_delay,
             referer: None,
             rate_limiter: RateLimiter::new(backend),
+            privacy_mode,
             #[cfg(feature = "browser")]
             browser_pool: Self::create_browser_pool(),
         }
+    }
+
+    /// Create a new HTTP client with privacy configuration.
+    /// - None: Use default FOIAcquire user agent
+    /// - Some("impersonate"): Use random real browser user agent
+    /// - Some(custom): Use custom user agent string
+    ///
+    /// # Errors
+    /// Returns an error if Tor mode is requested but Tor is not available.
+    pub fn with_privacy(
+        source_id: &str,
+        timeout: Duration,
+        request_delay: Duration,
+        user_agent_config: Option<&str>,
+        privacy_config: &PrivacyConfig,
+    ) -> Result<Self, String> {
+        let user_agent = resolve_user_agent(user_agent_config);
+        let (client, privacy_mode) =
+            Self::build_client(&user_agent, timeout, Some(privacy_config))?;
+
+        // Default in-memory backend with request_delay as base
+        let backend = Arc::new(InMemoryRateLimitBackend::new(
+            request_delay.as_millis() as u64
+        ));
+        Ok(Self {
+            client,
+            crawl_repo: None,
+            source_id: source_id.to_string(),
+            request_delay,
+            referer: None,
+            rate_limiter: RateLimiter::new(backend),
+            privacy_mode,
+            #[cfg(feature = "browser")]
+            browser_pool: Self::create_browser_pool(),
+        })
     }
 
     /// Create a new HTTP client with a shared rate limiter.
@@ -118,6 +246,7 @@ impl HttpClient {
     }
 
     /// Create a new HTTP client with a shared rate limiter and custom user agent.
+    /// Uses direct connections (no privacy routing).
     pub fn with_rate_limiter_and_user_agent(
         source_id: &str,
         timeout: Duration,
@@ -126,13 +255,9 @@ impl HttpClient {
         user_agent_config: Option<&str>,
     ) -> Self {
         let user_agent = resolve_user_agent(user_agent_config);
-        let client = Client::builder()
-            .user_agent(&user_agent)
-            .timeout(timeout)
-            .gzip(true)
-            .brotli(true)
-            .build()
-            .expect("Failed to create HTTP client");
+        // None privacy config = Direct mode, which never fails
+        let (client, privacy_mode) = Self::build_client(&user_agent, timeout, None)
+            .expect("Direct mode client creation should never fail");
 
         Self {
             client,
@@ -141,9 +266,39 @@ impl HttpClient {
             request_delay,
             referer: None,
             rate_limiter,
+            privacy_mode,
             #[cfg(feature = "browser")]
             browser_pool: Self::create_browser_pool(),
         }
+    }
+
+    /// Create a new HTTP client with a shared rate limiter and privacy configuration.
+    ///
+    /// # Errors
+    /// Returns an error if Tor mode is requested but Tor is not available.
+    pub fn with_rate_limiter_and_privacy(
+        source_id: &str,
+        timeout: Duration,
+        request_delay: Duration,
+        rate_limiter: RateLimiter,
+        user_agent_config: Option<&str>,
+        privacy_config: &PrivacyConfig,
+    ) -> Result<Self, String> {
+        let user_agent = resolve_user_agent(user_agent_config);
+        let (client, privacy_mode) =
+            Self::build_client(&user_agent, timeout, Some(privacy_config))?;
+
+        Ok(Self {
+            client,
+            crawl_repo: None,
+            source_id: source_id.to_string(),
+            request_delay,
+            referer: None,
+            rate_limiter,
+            privacy_mode,
+            #[cfg(feature = "browser")]
+            browser_pool: Self::create_browser_pool(),
+        })
     }
 
     /// Set the crawl repository for request logging.
@@ -161,6 +316,16 @@ impl HttpClient {
     /// Get the rate limiter for this client.
     pub fn rate_limiter(&self) -> &RateLimiter {
         &self.rate_limiter
+    }
+
+    /// Get the privacy mode for this client.
+    pub fn privacy_mode(&self) -> PrivacyMode {
+        self.privacy_mode
+    }
+
+    /// Check if this client is using a proxy (Tor or external).
+    pub fn is_proxied(&self) -> bool {
+        !matches!(self.privacy_mode, PrivacyMode::Direct)
     }
 
     /// Make a GET request with optional conditional headers.

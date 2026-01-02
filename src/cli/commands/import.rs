@@ -1,5 +1,6 @@
-//! WARC file import command.
+//! Import commands for WARC files, URL lists, and stdin content.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,6 +8,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::config::Settings;
+use crate::models::{CrawlUrl, DiscoveryMethod};
 
 /// Import documents from WARC archive files.
 #[allow(clippy::too_many_arguments)]
@@ -560,4 +562,242 @@ fn guess_mime_type(url: &str) -> String {
     } else {
         "application/octet-stream".to_string()
     }
+}
+
+/// Import URLs from a file to add to the crawl queue.
+///
+/// Each line in the file should contain a single URL. Empty lines and lines
+/// starting with # are ignored.
+pub async fn cmd_import_urls(
+    settings: &Settings,
+    file: &PathBuf,
+    source_id: &str,
+    _method: &str,
+    skip_invalid: bool,
+) -> anyhow::Result<()> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    use url::Url;
+
+    settings.ensure_directories()?;
+    let ctx = settings.create_db_context()?;
+    let crawl_repo = ctx.crawl();
+
+    // Read URLs from file
+    let file = File::open(file)?;
+    let reader = BufReader::new(file);
+
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    let mut invalid = 0usize;
+    let mut line_num = 0usize;
+
+    println!(
+        "{} Importing URLs from file for source '{}'...",
+        style("→").cyan(),
+        source_id
+    );
+
+    for line in reader.lines() {
+        line_num += 1;
+        let line = line?;
+        let trimmed = line.trim();
+
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Validate URL
+        if Url::parse(trimmed).is_err() {
+            if skip_invalid {
+                invalid += 1;
+                continue;
+            } else {
+                anyhow::bail!("Invalid URL at line {}: {}", line_num, trimmed);
+            }
+        }
+
+        // Create crawl URL entry
+        let crawl_url = CrawlUrl::new(
+            trimmed.to_string(),
+            source_id.to_string(),
+            DiscoveryMethod::Manual,
+            None,
+            0,
+        );
+
+        match crawl_repo.add_url(&crawl_url).await {
+            Ok(true) => added += 1,
+            Ok(false) => skipped += 1, // Already exists
+            Err(e) => {
+                if skip_invalid {
+                    invalid += 1;
+                    tracing::warn!("Failed to add URL at line {}: {}", line_num, e);
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+
+    println!(
+        "{} Import complete: {} added, {} already existed, {} invalid",
+        style("✓").green(),
+        added,
+        skipped,
+        invalid
+    );
+
+    Ok(())
+}
+
+/// Import document content from stdin.
+///
+/// Reads content from stdin and saves it as a document with the specified URL.
+pub async fn cmd_import_stdin(
+    settings: &Settings,
+    url: &str,
+    source_id: &str,
+    content_type: Option<&str>,
+    filename: Option<&str>,
+) -> anyhow::Result<()> {
+    use chrono::Utc;
+    use url::Url;
+
+    use crate::cli::helpers::content_storage_path_with_name;
+    use crate::models::{Document, DocumentVersion, Source, SourceType};
+    use crate::repository::extract_filename_parts;
+
+    settings.ensure_directories()?;
+    let ctx = settings.create_db_context()?;
+    let source_repo = ctx.sources();
+    let doc_repo = ctx.documents();
+
+    // Validate URL
+    let parsed_url = Url::parse(url)?;
+
+    // Read content from stdin
+    let mut content = Vec::new();
+    std::io::stdin().read_to_end(&mut content)?;
+
+    if content.is_empty() {
+        anyhow::bail!("No content received from stdin");
+    }
+
+    println!(
+        "{} Importing {} bytes from stdin for URL: {}",
+        style("→").cyan(),
+        content.len(),
+        url
+    );
+
+    // Detect content type if not specified
+    let mime_type = content_type
+        .map(|s| s.to_string())
+        .or_else(|| infer::get(&content).map(|t| t.mime_type().to_string()))
+        .unwrap_or_else(|| guess_mime_type(url));
+
+    // Extract filename from URL if not specified
+    let original_filename = filename.map(|s| s.to_string()).or_else(|| {
+        parsed_url
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    });
+
+    // Ensure source exists
+    let source = match source_repo.get(source_id).await? {
+        Some(s) => s,
+        None => {
+            println!("  {} Creating source '{}'...", style("→").dim(), source_id);
+            let new_source = Source {
+                id: source_id.to_string(),
+                name: source_id.to_string(),
+                source_type: SourceType::Custom,
+                base_url: format!(
+                    "{}://{}",
+                    parsed_url.scheme(),
+                    parsed_url.host_str().unwrap_or("unknown")
+                ),
+                metadata: serde_json::json!({}),
+                created_at: Utc::now(),
+                last_scraped: None,
+            };
+            source_repo.save(&new_source).await?;
+            new_source
+        }
+    };
+
+    // Compute content hash and storage path
+    let content_hash = DocumentVersion::compute_hash(&content);
+    let title = original_filename
+        .clone()
+        .unwrap_or_else(|| "document".to_string());
+    let (basename, extension) = extract_filename_parts(url, &title, &mime_type);
+    let content_path = content_storage_path_with_name(
+        &settings.documents_dir,
+        &content_hash,
+        &basename,
+        &extension,
+    );
+
+    // Save content to file
+    std::fs::create_dir_all(content_path.parent().unwrap())?;
+    std::fs::write(&content_path, &content)?;
+
+    // Create document version
+    let version = DocumentVersion::new_with_metadata(
+        &content,
+        content_path,
+        mime_type.clone(),
+        Some(url.to_string()),
+        original_filename.clone(),
+        None, // No server date for stdin import
+    );
+
+    // Check for existing document at this URL
+    let existing = doc_repo.get_by_url(url).await?;
+
+    let (doc_id, is_new) = if let Some(mut doc) = existing.into_iter().next() {
+        let added = doc.add_version(version);
+        if added {
+            doc_repo.save(&doc).await?;
+        }
+        (doc.id.clone(), false)
+    } else {
+        let title = original_filename.unwrap_or_else(|| "Imported document".to_string());
+        let doc = Document::new(
+            uuid::Uuid::new_v4().to_string(),
+            source.id.clone(),
+            title,
+            url.to_string(),
+            version,
+            serde_json::json!({ "discovery_method": "stdin-import" }),
+        );
+        let doc_id = doc.id.clone();
+        doc_repo.save(&doc).await?;
+        (doc_id, true)
+    };
+
+    if is_new {
+        println!(
+            "{} Imported document: {} ({}, {} bytes)",
+            style("✓").green(),
+            doc_id,
+            mime_type,
+            content.len()
+        );
+    } else {
+        println!(
+            "{} Added version to existing document: {} ({}, {} bytes)",
+            style("✓").green(),
+            doc_id,
+            mime_type,
+            content.len()
+        );
+    }
+
+    Ok(())
 }
