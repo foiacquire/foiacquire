@@ -83,6 +83,7 @@ impl DownloadService {
             let documents_dir = self.config.documents_dir.clone();
             let timeout = self.config.request_timeout;
             let delay = self.config.request_delay;
+            let privacy = self.config.privacy.clone();
             let source_id = source_id.map(|s| s.to_string());
             let downloaded = downloaded.clone();
             let deduplicated = deduplicated.clone();
@@ -91,7 +92,14 @@ impl DownloadService {
             let event_tx = event_tx.clone();
 
             let handle = tokio::spawn(async move {
-                let client = HttpClient::new("download", timeout, delay);
+                let client =
+                    match HttpClient::with_privacy("download", timeout, delay, None, &privacy) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Failed to create HTTP client: {}", e);
+                            return;
+                        }
+                    };
 
                 loop {
                     // Check limit

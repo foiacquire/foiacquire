@@ -82,6 +82,8 @@ pub enum DiscoveryMethod {
     WaybackMachine,
     /// Found by enumerating common document paths.
     CommonPath,
+    /// Manually imported by user.
+    Manual,
 }
 
 impl DiscoveryMethod {
@@ -100,6 +102,7 @@ impl DiscoveryMethod {
             Self::Sitemap => "sitemap",
             Self::WaybackMachine => "wayback_machine",
             Self::CommonPath => "common_path",
+            Self::Manual => "manual",
         }
     }
 
@@ -118,6 +121,7 @@ impl DiscoveryMethod {
             "sitemap" => Some(Self::Sitemap),
             "wayback_machine" => Some(Self::WaybackMachine),
             "common_path" => Some(Self::CommonPath),
+            "manual" => Some(Self::Manual),
             _ => None,
         }
     }

@@ -40,7 +40,7 @@ pub enum RateLimitBackendType {
 }
 
 #[derive(Parser)]
-#[command(name = "foiacquire")]
+#[command(name = "foia")]
 #[command(about = "FOIA document acquisition and research system")]
 #[command(version)]
 pub struct Cli {
@@ -60,6 +60,22 @@ pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Disable Tor (INSECURE - your IP will be exposed to target servers)
+    #[arg(short = 'D', long, global = true)]
+    direct: bool,
+
+    /// Use Tor without obfuscation (detectable as Tor traffic)
+    #[arg(long, global = true)]
+    no_obfuscation: bool,
+
+    /// Security warning countdown delay in seconds (0 to skip countdown)
+    #[arg(long, global = true)]
+    privacy_warning_delay: Option<u64>,
+
+    /// Disable Tor legality warning
+    #[arg(long, global = true)]
+    no_tor_warning: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -155,6 +171,14 @@ enum Commands {
 
     /// Show system status
     Status {
+        /// Server URL to fetch status from (e.g., http://localhost:3030).
+        /// Can also be set via FOIA_API_URL environment variable.
+        #[arg(long, short, env = "FOIA_API_URL")]
+        url: Option<String>,
+
+        /// Source ID to filter status (optional)
+        source_id: Option<String>,
+
         /// Continuously refresh status display (TUI mode)
         #[arg(long)]
         live: bool,
@@ -162,6 +186,10 @@ enum Commands {
         /// Refresh interval in seconds
         #[arg(long, default_value = "5")]
         interval: u64,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Analyze documents: detect content types, extract text, and run OCR
@@ -343,31 +371,10 @@ enum Commands {
         limit: usize,
     },
 
-    /// Import documents from WARC (Web Archive) files
+    /// Import documents or URLs from various sources
     Import {
-        /// WARC file(s) to import (supports .warc and .warc.gz)
-        files: Vec<PathBuf>,
-        /// Source ID to associate imported documents with (auto-detected from URLs if not specified)
-        #[arg(short, long)]
-        source: Option<String>,
-        /// URL pattern filter (regex, e.g. "\.pdf$" for PDFs only)
-        #[arg(short, long)]
-        filter: Option<String>,
-        /// Limit number of records to import (0 = unlimited)
-        #[arg(short, long, default_value = "0")]
-        limit: usize,
-        /// Limit number of records to scan (0 = unlimited). Useful for testing with large archives.
-        #[arg(long, default_value = "0")]
-        scan_limit: usize,
-        /// Dry run - show what would be imported without saving
-        #[arg(long)]
-        dry_run: bool,
-        /// Disable resume support - ignore progress files and start from beginning
-        #[arg(long)]
-        no_resume: bool,
-        /// How often to save progress (in records). Set to 0 to disable checkpointing.
-        #[arg(long, default_value = "10000")]
-        checkpoint_interval: usize,
+        #[command(subcommand)]
+        command: ImportCommands,
     },
 
     /// Discover new document URLs using various methods
@@ -578,6 +585,68 @@ enum AnnotateCommands {
 }
 
 #[derive(Subcommand)]
+enum ImportCommands {
+    /// Import documents from WARC (Web Archive) files
+    Warc {
+        /// WARC file(s) to import (supports .warc and .warc.gz)
+        files: Vec<PathBuf>,
+        /// Source ID to associate imported documents with (auto-detected from URLs if not specified)
+        #[arg(short, long)]
+        source: Option<String>,
+        /// URL pattern filter (regex, e.g. "\.pdf$" for PDFs only)
+        #[arg(short, long)]
+        filter: Option<String>,
+        /// Limit number of records to import (0 = unlimited)
+        #[arg(short, long, default_value = "0")]
+        limit: usize,
+        /// Limit number of records to scan (0 = unlimited). Useful for testing with large archives.
+        #[arg(long, default_value = "0")]
+        scan_limit: usize,
+        /// Dry run - show what would be imported without saving
+        #[arg(long)]
+        dry_run: bool,
+        /// Disable resume support - ignore progress files and start from beginning
+        #[arg(long)]
+        no_resume: bool,
+        /// How often to save progress (in records). Set to 0 to disable checkpointing.
+        #[arg(long, default_value = "10000")]
+        checkpoint_interval: usize,
+    },
+
+    /// Import URLs from a file to add to the crawl queue
+    Urls {
+        /// File containing URLs (one per line)
+        #[arg(short, long)]
+        file: PathBuf,
+        /// Source ID to associate URLs with (required)
+        #[arg(short, long)]
+        source: String,
+        /// Discovery method to tag URLs with (default: "import")
+        #[arg(long, default_value = "import")]
+        method: String,
+        /// Skip invalid URLs instead of failing
+        #[arg(long)]
+        skip_invalid: bool,
+    },
+
+    /// Import document content from stdin
+    Stdin {
+        /// URL to associate with the imported content
+        #[arg(short, long)]
+        url: String,
+        /// Source ID to associate the document with (required)
+        #[arg(short, long)]
+        source: String,
+        /// Content type (MIME type, auto-detected if not specified)
+        #[arg(short = 't', long)]
+        content_type: Option<String>,
+        /// Original filename (extracted from URL if not specified)
+        #[arg(short = 'n', long)]
+        filename: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum DbCommands {
     /// Run database migrations
     Migrate {
@@ -659,7 +728,21 @@ pub async fn run() -> anyhow::Result<()> {
         use_cwd: cli.cwd,
         target: cli.target,
     };
-    let (settings, _config) = load_settings_with_options(options).await;
+    let (settings, mut config) = load_settings_with_options(options).await;
+
+    // Apply CLI privacy overrides
+    config.privacy = config.privacy.with_cli_overrides(
+        cli.direct,
+        cli.no_obfuscation,
+        cli.privacy_warning_delay,
+        cli.no_tor_warning,
+    );
+
+    // Show Tor legality warning (can be disabled)
+    config.privacy.show_tor_legal_warning();
+
+    // Enforce security warning with countdown if insecure (cannot be disabled)
+    config.privacy.enforce_security_warning().await;
 
     match cli.command {
         Commands::Init => init::cmd_init(&settings).await,
@@ -679,7 +762,17 @@ pub async fn run() -> anyhow::Result<()> {
             workers,
             limit,
             progress,
-        } => scrape::cmd_download(&settings, source_id.as_deref(), workers, limit, progress).await,
+        } => {
+            scrape::cmd_download(
+                &settings,
+                source_id.as_deref(),
+                workers,
+                limit,
+                progress,
+                &config.privacy,
+            )
+            .await
+        }
         Commands::State { command } => match command {
             StateCommands::Status { source_id } => {
                 state::cmd_crawl_status(&settings, source_id).await
@@ -758,10 +851,17 @@ pub async fn run() -> anyhow::Result<()> {
                 interval,
                 reload,
                 rate_limit_backend,
+                &config.privacy,
             )
             .await
         }
-        Commands::Status { live, interval } => scrape::cmd_status(&settings, live, interval).await,
+        Commands::Status {
+            url,
+            source_id,
+            live,
+            interval,
+            json,
+        } => scrape::cmd_status(&settings, url, source_id, live, interval, json).await,
         Commands::Analyze {
             source_id,
             doc_id,
@@ -801,7 +901,17 @@ pub async fn run() -> anyhow::Result<()> {
             workers,
             limit,
             force,
-        } => scrape::cmd_refresh(&settings, source_id.as_deref(), workers, limit, force).await,
+        } => {
+            scrape::cmd_refresh(
+                &settings,
+                source_id.as_deref(),
+                workers,
+                limit,
+                force,
+                &config.privacy,
+            )
+            .await
+        }
         Commands::Annotate {
             command,
             source_id,
@@ -866,29 +976,52 @@ pub async fn run() -> anyhow::Result<()> {
             source,
             limit,
         } => documents::cmd_search(&settings, &query, source.as_deref(), limit).await,
-        Commands::Import {
-            files,
-            source,
-            filter,
-            limit,
-            scan_limit,
-            dry_run,
-            no_resume,
-            checkpoint_interval,
-        } => {
-            import::cmd_import(
-                &settings,
-                &files,
-                source.as_deref(),
-                filter.as_deref(),
+        Commands::Import { command } => match command {
+            ImportCommands::Warc {
+                files,
+                source,
+                filter,
                 limit,
                 scan_limit,
                 dry_run,
-                !no_resume,
+                no_resume,
                 checkpoint_interval,
-            )
-            .await
-        }
+            } => {
+                import::cmd_import(
+                    &settings,
+                    &files,
+                    source.as_deref(),
+                    filter.as_deref(),
+                    limit,
+                    scan_limit,
+                    dry_run,
+                    !no_resume,
+                    checkpoint_interval,
+                )
+                .await
+            }
+            ImportCommands::Urls {
+                file,
+                source,
+                method,
+                skip_invalid,
+            } => import::cmd_import_urls(&settings, &file, &source, &method, skip_invalid).await,
+            ImportCommands::Stdin {
+                url,
+                source,
+                content_type,
+                filename,
+            } => {
+                import::cmd_import_stdin(
+                    &settings,
+                    &url,
+                    &source,
+                    content_type.as_deref(),
+                    filename.as_deref(),
+                )
+                .await
+            }
+        },
         Commands::Discover { command } => match command {
             DiscoverCommands::Pattern {
                 source_id,

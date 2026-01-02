@@ -15,6 +15,8 @@ use super::config::ScraperConfig;
 use super::rate_limiter::RateLimiter;
 use super::HttpClient;
 use crate::models::Source;
+#[allow(unused_imports)]
+use crate::privacy::PrivacyConfig;
 use crate::repository::DieselCrawlRepository;
 
 mod api;
@@ -57,6 +59,7 @@ impl ConfigurableScraper {
     }
 
     /// Create a new configurable scraper with a shared rate limiter.
+    /// Uses direct connections (no privacy routing).
     pub fn with_rate_limiter(
         source: Source,
         config: ScraperConfig,
@@ -65,21 +68,68 @@ impl ConfigurableScraper {
         refresh_ttl_days: u64,
         rate_limiter: Option<RateLimiter>,
     ) -> Self {
-        let client = if let Some(limiter) = rate_limiter {
-            HttpClient::with_rate_limiter_and_user_agent(
+        // None privacy config = Direct mode, which never fails
+        Self::with_rate_limiter_and_privacy(
+            source,
+            config,
+            crawl_repo,
+            request_delay,
+            refresh_ttl_days,
+            rate_limiter,
+            None,
+        )
+        .expect("Direct mode scraper creation should never fail")
+    }
+
+    /// Create a new configurable scraper with a shared rate limiter and privacy config.
+    ///
+    /// The effective privacy config is determined by:
+    /// 1. Starting with the global privacy config
+    /// 2. Applying per-source overrides from scraper config's `privacy` field
+    ///
+    /// # Errors
+    /// Returns an error if Tor mode is requested but Tor is not available.
+    pub fn with_rate_limiter_and_privacy(
+        source: Source,
+        config: ScraperConfig,
+        crawl_repo: Option<Arc<DieselCrawlRepository>>,
+        request_delay: Duration,
+        refresh_ttl_days: u64,
+        rate_limiter: Option<RateLimiter>,
+        privacy_config: Option<&PrivacyConfig>,
+    ) -> Result<Self, String> {
+        // Apply per-source privacy overrides to global config
+        let effective_privacy = privacy_config.map(|global| config.privacy.apply_to(global));
+
+        let client = match (rate_limiter, effective_privacy.as_ref()) {
+            (Some(limiter), Some(privacy)) => HttpClient::with_rate_limiter_and_privacy(
                 &source.id,
                 Duration::from_secs(30),
                 request_delay,
                 limiter,
                 config.user_agent.as_deref(),
-            )
-        } else {
-            HttpClient::with_user_agent(
+                privacy,
+            )?,
+            (Some(limiter), None) => HttpClient::with_rate_limiter_and_user_agent(
+                &source.id,
+                Duration::from_secs(30),
+                request_delay,
+                limiter,
+                config.user_agent.as_deref(),
+            ),
+            (None, Some(privacy)) => HttpClient::with_privacy(
                 &source.id,
                 Duration::from_secs(30),
                 request_delay,
                 config.user_agent.as_deref(),
-            )
+                privacy,
+            )?,
+            (None, None) => HttpClient::with_user_agent(
+                &source.id,
+                Duration::from_secs(30),
+                request_delay,
+                config.user_agent.as_deref(),
+            ),
         };
         let client = if let Some(repo) = crawl_repo.clone() {
             client.with_crawl_repo(repo)
@@ -94,7 +144,7 @@ impl ConfigurableScraper {
             .filter(|b| b.enabled)
             .map(|b| b.to_engine_config());
 
-        Self {
+        Ok(Self {
             source,
             config,
             client,
@@ -102,7 +152,7 @@ impl ConfigurableScraper {
             refresh_ttl_days,
             #[cfg(feature = "browser")]
             browser_config,
-        }
+        })
     }
 
     /// Check if browser mode is enabled.

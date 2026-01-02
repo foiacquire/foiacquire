@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::llm::LlmConfig;
+use crate::privacy::PrivacyConfig;
 use crate::repository::diesel_context::DieselDbContext;
 use crate::repository::util::{is_postgres_url, validate_database_url};
 use crate::scrapers::ScraperConfig;
@@ -344,6 +345,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "AnalysisConfig::is_default")]
     pub analysis: AnalysisConfig,
 
+    /// Privacy configuration for Tor and proxy routing.
+    #[serde(default, skip_serializing_if = "PrivacyConfig::is_default")]
+    pub privacy: PrivacyConfig,
+
     /// Path to the config file this was loaded from (not serialized).
     #[serde(skip)]
     pub source_path: Option<PathBuf>,
@@ -375,6 +380,11 @@ impl Config {
                     .with_env_overrides();
                 let analysis: AnalysisConfig =
                     pref_config.get("analysis").await.unwrap_or_default();
+                let privacy: PrivacyConfig = pref_config
+                    .get::<PrivacyConfig>("privacy")
+                    .await
+                    .unwrap_or_default()
+                    .with_env_overrides();
 
                 // Get the source path from prefer
                 let source_path = pref_config.source_path().cloned();
@@ -391,6 +401,7 @@ impl Config {
                     scrapers,
                     llm,
                     analysis,
+                    privacy,
                     source_path,
                 }
             }
@@ -421,6 +432,7 @@ impl Config {
 
         config.source_path = Some(path.to_path_buf());
         config.llm = config.llm.with_env_overrides();
+        config.privacy = config.privacy.with_env_overrides();
         Ok(config)
     }
 
@@ -551,6 +563,7 @@ impl Config {
 
         // Apply environment variable overrides
         config.llm = config.llm.with_env_overrides();
+        config.privacy = config.privacy.with_env_overrides();
         Some(config)
     }
 

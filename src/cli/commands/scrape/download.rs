@@ -6,6 +6,7 @@ use std::time::Duration;
 use console::style;
 
 use crate::config::Settings;
+use crate::privacy::PrivacyConfig;
 use crate::repository::diesel_context::DieselDbContext;
 
 /// Download pending documents from the queue.
@@ -15,6 +16,7 @@ pub async fn cmd_download(
     workers: usize,
     limit: usize,
     show_progress: bool,
+    privacy_config: &PrivacyConfig,
 ) -> anyhow::Result<()> {
     use crate::cli::progress::DownloadProgress;
     use crate::services::{DownloadConfig, DownloadEvent, DownloadService};
@@ -56,6 +58,7 @@ pub async fn cmd_download(
             documents_dir: settings.documents_dir.clone(),
             request_timeout: Duration::from_secs(settings.request_timeout),
             request_delay: Duration::from_millis(settings.request_delay_ms),
+            privacy: privacy_config.clone(),
         },
     );
 

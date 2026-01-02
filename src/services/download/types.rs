@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::privacy::PrivacyConfig;
+
 /// Events emitted during download operations.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -57,4 +59,6 @@ pub struct DownloadConfig {
     pub documents_dir: PathBuf,
     pub request_timeout: Duration,
     pub request_delay: Duration,
+    /// Privacy configuration for HTTP requests.
+    pub privacy: PrivacyConfig,
 }

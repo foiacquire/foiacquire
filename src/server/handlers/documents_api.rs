@@ -161,7 +161,7 @@ pub async fn list_documents(
         })
         .collect();
 
-    let total_pages = (total + per_page as u64 - 1) / per_page as u64;
+    let total_pages = total.div_ceil(per_page as u64);
 
     Json(PaginatedResponse {
         items,

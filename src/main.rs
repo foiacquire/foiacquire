@@ -10,6 +10,7 @@ mod discovery;
 mod llm;
 mod models;
 mod ocr;
+mod privacy;
 mod repository;
 mod schema;
 mod scrapers;
