@@ -136,7 +136,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/x86_64-unknown-linux-musl/release/foiacquire
+          path: target/x86_64-unknown-linux-musl/release/foia
 
   build-arm64:
     name: Build arm64 Binaries
@@ -171,7 +171,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/aarch64-unknown-linux-musl/release/foiacquire
+          path: target/aarch64-unknown-linux-musl/release/foia
 
   chromium:
     name: Build Chromium Image
