@@ -129,28 +129,28 @@ impl LlmClient {
     }
 
     /// Check if the LLM service is available.
+    ///
+    /// For OpenAI-compatible APIs (Groq, OpenAI, Together), this checks that an API key is set.
+    /// For Ollama, this makes an HTTP call to verify the service is running.
     pub async fn is_available(&self) -> bool {
         if !self.config.enabled {
             return false;
         }
 
+        // For OpenAI-compatible APIs, just check that we have an API key
+        // Making an HTTP call to /v1/models can be slow and may have rate limits
+        if matches!(self.config.provider, LlmProvider::OpenAI) {
+            return self.config.api_key.is_some();
+        }
+
+        // For Ollama, check if the service is actually running
         let client = match self.create_client() {
             Ok(c) => c,
             Err(_) => return false,
         };
 
-        let url = match self.config.provider {
-            LlmProvider::Ollama => format!("{}/api/tags", self.config.endpoint),
-            LlmProvider::OpenAI => format!("{}/v1/models", self.config.endpoint),
-        };
-
-        let response = if let Some(ref api_key) = self.config.api_key {
-            let mut headers = HashMap::new();
-            headers.insert("Authorization".to_string(), format!("Bearer {}", api_key));
-            client.get_with_headers(&url, headers).await
-        } else {
-            client.get(&url, None, None).await
-        };
+        let url = format!("{}/api/tags", self.config.endpoint);
+        let response = client.get(&url, None, None).await;
 
         match response {
             Ok(resp) => resp.status.is_success(),

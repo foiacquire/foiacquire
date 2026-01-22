@@ -63,23 +63,22 @@ pub async fn cmd_annotate(
     let config_history = ctx.config_history();
 
     println!(
-        "{} Using LLM at {} (model: {})",
+        "{} Using {} at {} (model: {})",
         style("✓").green(),
+        llm_config.provider_name(),
         llm_config.endpoint,
         llm_config.model
     );
 
     // Check if LLM service is available
-    // TODO: Establish whether this makes sense any more
-    // if !service.is_available().await {
-    //     println!(
-    //         "{} LLM service not available at {}",
-    //         style("✗").red(),
-    //         llm_config.endpoint
-    //     );
-    //     println!("  Make sure Ollama is running: ollama serve");
-    //     return Ok(());
-    // }
+    if !service.is_available().await {
+        println!(
+            "{} {}",
+            style("✗").red(),
+            service.llm_config().availability_hint()
+        );
+        return Ok(());
+    }
 
     // If specific doc_id provided, process just that document (no daemon mode)
     if let Some(id) = doc_id {

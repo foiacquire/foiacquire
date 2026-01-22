@@ -120,6 +120,7 @@ impl LlmConfig {
     /// - `LLM_ENABLED`: "true" or "false"
     /// - `LLM_PROVIDER`: "ollama" (default), "openai", "groq", or "together"
     /// - `LLM_ENDPOINT`: API endpoint (defaults based on provider)
+    /// - `OLLAMA_HOST`: Ollama endpoint (standard Ollama env var, fallback for LLM_ENDPOINT)
     /// - `LLM_API_KEY`: API key for OpenAI-compatible providers
     /// - `LLM_MODEL`: Model name
     /// - `LLM_MAX_TOKENS`: Maximum tokens in response
@@ -150,10 +151,13 @@ impl LlmConfig {
             }
         }
 
-        // Explicit endpoint always wins
+        // Explicit endpoint always wins, then OLLAMA_HOST for Ollama provider
         let explicit_endpoint = std::env::var("LLM_ENDPOINT").ok();
         if let Some(ref endpoint) = explicit_endpoint {
             self.endpoint = endpoint.clone();
+        } else if let Ok(ollama_host) = std::env::var("OLLAMA_HOST") {
+            // OLLAMA_HOST is standard Ollama env var - use as fallback for Ollama provider
+            self.endpoint = ollama_host;
         }
 
         // Explicit API key always wins
@@ -162,6 +166,7 @@ impl LlmConfig {
         }
 
         // If provider was explicitly set, use provider-specific defaults
+        let explicit_model = std::env::var("LLM_MODEL").ok();
         if let Some(ref provider_str) = explicit_provider {
             let provider_lower = provider_str.to_lowercase();
 
@@ -184,6 +189,16 @@ impl LlmConfig {
                     _ => {}
                 }
             }
+
+            // Set default model for provider if not explicitly provided
+            if explicit_model.is_none() {
+                match provider_lower.as_str() {
+                    "groq" => self.model = "llama-3.1-70b-versatile".to_string(),
+                    "openai" => self.model = "gpt-4o-mini".to_string(),
+                    "together" => self.model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".to_string(),
+                    _ => {} // ollama keeps default
+                }
+            }
         } else {
             // No explicit provider - auto-detect from available keys
             if self.api_key.is_none() {
@@ -193,11 +208,19 @@ impl LlmConfig {
                     if explicit_endpoint.is_none() {
                         self.endpoint = "https://api.groq.com/openai".to_string();
                     }
+                    // Set default Groq model if not explicitly configured
+                    if self.model == default_model() {
+                        self.model = "llama-3.1-70b-versatile".to_string();
+                    }
                 } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
                     self.api_key = Some(key);
                     self.provider = LlmProvider::OpenAI;
                     if explicit_endpoint.is_none() {
                         self.endpoint = "https://api.openai.com".to_string();
+                    }
+                    // Set default OpenAI model if not explicitly configured
+                    if self.model == default_model() {
+                        self.model = "gpt-4o-mini".to_string();
                     }
                 }
             }
@@ -250,5 +273,40 @@ impl LlmConfig {
     /// Get the tags prompt, using custom or default.
     pub fn get_tags_prompt(&self) -> &str {
         self.tags_prompt.as_deref().unwrap_or(DEFAULT_TAGS_PROMPT)
+    }
+
+    /// Get a provider-aware availability hint for error messages.
+    pub fn availability_hint(&self) -> String {
+        match self.provider {
+            LlmProvider::Ollama => {
+                format!(
+                    "Ollama not available at {}. Make sure Ollama is running: ollama serve",
+                    self.endpoint
+                )
+            }
+            LlmProvider::OpenAI => {
+                if self.api_key.is_none() {
+                    "OpenAI API key not set. Set OPENAI_API_KEY or LLM_API_KEY".to_string()
+                } else {
+                    format!("OpenAI API not available at {}", self.endpoint)
+                }
+            }
+        }
+    }
+
+    /// Get the provider name for display.
+    pub fn provider_name(&self) -> &'static str {
+        match self.provider {
+            LlmProvider::Ollama => "Ollama",
+            LlmProvider::OpenAI => {
+                if self.endpoint.contains("groq.com") {
+                    "Groq"
+                } else if self.endpoint.contains("together.xyz") {
+                    "Together.ai"
+                } else {
+                    "OpenAI"
+                }
+            }
+        }
     }
 }
