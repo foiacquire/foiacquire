@@ -93,6 +93,7 @@ pub fn extract_document_text_per_page(
             let _ = handle.block_on(doc_repo.store_page_ocr_result(
                 page_id,
                 "pdftotext",
+                None, // no model for pdftotext
                 Some(&pdf_text),
                 None, // no confidence score for pdftotext
                 None, // no processing time tracked
@@ -157,6 +158,7 @@ pub fn ocr_document_page(
             let _ = handle.block_on(doc_repo.store_page_ocr_result(
                 page.id,
                 "tesseract",
+                None, // tesseract doesn't have model variants
                 Some(&ocr_text),
                 None, // TODO: could extract confidence from tesseract
                 None, // TODO: could track processing time

@@ -75,6 +75,7 @@ diesel::table! {
         status -> Text,
         created_at -> Text,
         metadata -> Nullable<Text>,
+        model -> Nullable<Text>,
     }
 }
 
@@ -106,6 +107,7 @@ diesel::table! {
         processing_time_ms -> Nullable<Integer>,
         error_message -> Nullable<Text>,
         created_at -> Text,
+        model -> Nullable<Text>,
     }
 }
 

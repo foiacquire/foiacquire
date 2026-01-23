@@ -39,6 +39,8 @@ pub struct OcrResult {
     pub confidence: Option<f32>,
     /// Which backend produced this result.
     pub backend: OcrBackendType,
+    /// Which model was used (e.g., "gemini-1.5-flash", "llama-4-scout-17b").
+    pub model: Option<String>,
     /// Processing time in milliseconds.
     pub processing_time_ms: u64,
 }
