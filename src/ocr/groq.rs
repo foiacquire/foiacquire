@@ -305,6 +305,7 @@ impl OcrBackend for GroqBackend {
             text,
             confidence: None,
             backend: OcrBackendType::Groq,
+            model: Some(self.model.clone()),
             processing_time_ms: elapsed.as_millis() as u64,
         })
     }
@@ -322,6 +323,7 @@ impl OcrBackend for GroqBackend {
             text,
             confidence: None,
             backend: OcrBackendType::Groq,
+            model: Some(self.model.clone()),
             processing_time_ms: elapsed.as_millis() as u64,
         })
     }

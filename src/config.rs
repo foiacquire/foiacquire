@@ -294,9 +294,9 @@ impl Settings {
 /// Configuration file structure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
-    /// Target directory for data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
+    /// Data directory path.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "target")]
+    pub data_dir: Option<String>,
     /// Database filename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
@@ -369,7 +369,12 @@ impl Config {
         match prefer::load("foiacquire").await {
             Ok(pref_config) => {
                 // Extract values from prefer config using dot notation
-                let target: Option<String> = pref_config.get("target").await.ok();
+                // Try data_dir first, fall back to target for backwards compat
+                let data_dir: Option<String> = pref_config
+                    .get("data_dir")
+                    .await
+                    .ok()
+                    .or(pref_config.get("target").await.ok());
                 let database: Option<String> = pref_config.get("database").await.ok();
                 let user_agent: Option<String> = pref_config.get("user_agent").await.ok();
                 let request_timeout: Option<u64> = pref_config.get("request_timeout").await.ok();
@@ -400,7 +405,7 @@ impl Config {
                 let source_path = pref_config.source_path().cloned();
 
                 Config {
-                    target,
+                    data_dir,
                     database,
                     user_agent,
                     request_timeout,
@@ -481,8 +486,8 @@ impl Config {
     /// Apply configuration to settings.
     /// `base_dir` is used to resolve relative paths (typically config file dir or CWD).
     pub fn apply_to_settings(&self, settings: &mut Settings, base_dir: &Path) {
-        if let Some(ref target) = self.target {
-            settings.data_dir = self.resolve_path(target, base_dir);
+        if let Some(ref data_dir) = self.data_dir {
+            settings.data_dir = self.resolve_path(data_dir, base_dir);
             settings.documents_dir = settings.data_dir.join(DOCUMENTS_SUBDIR);
         }
         if let Some(ref database) = self.database {
@@ -528,20 +533,20 @@ impl Config {
     }
 
     /// Serialize config to JSON with paths converted to relative.
-    /// Any paths pointing to `target_dir` are converted to relative paths.
-    pub fn to_json_relative(&self, target_dir: &Path) -> String {
+    /// Any paths pointing to `base_dir` are converted to relative paths.
+    pub fn to_json_relative(&self, base_dir: &Path) -> String {
         let mut config = self.clone();
         config.source_path = None; // Don't serialize the source path
 
-        // Convert target path to relative if it points to target_dir
-        if let Some(ref target) = config.target {
-            let target_path = Path::new(target);
-            if let Ok(canonical_target) = fs::canonicalize(target_path) {
-                if let Ok(canonical_dir) = fs::canonicalize(target_dir) {
-                    if canonical_target == canonical_dir {
-                        config.target = Some(".".to_string());
-                    } else if let Ok(rel) = canonical_target.strip_prefix(&canonical_dir) {
-                        config.target = Some(format!("./{}", rel.display()));
+        // Convert data_dir path to relative if it points to base_dir
+        if let Some(ref data_dir) = config.data_dir {
+            let data_path = Path::new(data_dir);
+            if let Ok(canonical_data) = fs::canonicalize(data_path) {
+                if let Ok(canonical_base) = fs::canonicalize(base_dir) {
+                    if canonical_data == canonical_base {
+                        config.data_dir = Some(".".to_string());
+                    } else if let Ok(rel) = canonical_data.strip_prefix(&canonical_base) {
+                        config.data_dir = Some(format!("./{}", rel.display()));
                     }
                 }
             }
@@ -552,8 +557,8 @@ impl Config {
             let db_path = Path::new(database);
             if db_path.is_absolute() {
                 if let Ok(canonical_db) = fs::canonicalize(db_path) {
-                    if let Ok(canonical_dir) = fs::canonicalize(target_dir) {
-                        if let Ok(rel) = canonical_db.strip_prefix(&canonical_dir) {
+                    if let Ok(canonical_base) = fs::canonicalize(base_dir) {
+                        if let Ok(rel) = canonical_db.strip_prefix(&canonical_base) {
                             config.database = Some(format!("./{}", rel.display()));
                         }
                     }
@@ -624,54 +629,54 @@ pub struct LoadOptions {
     pub config_path: Option<PathBuf>,
     /// Use CWD for relative paths instead of config file directory.
     pub use_cwd: bool,
-    /// Target directory or database file (--target flag).
+    /// Data directory or database file (--data flag).
     /// Can be a directory containing foiacquire.db or a .db file directly.
-    pub target: Option<PathBuf>,
+    pub data: Option<PathBuf>,
 }
 
-/// Resolved target information for SQLite databases.
+/// Resolved data path information for SQLite databases.
 /// Only used when DATABASE_URL is NOT set to postgres.
 #[derive(Debug, Clone)]
-pub struct ResolvedTarget {
+pub struct ResolvedData {
     /// The database filename.
     pub database_filename: String,
     /// Full path to the database.
     pub database_path: PathBuf,
 }
 
-impl ResolvedTarget {
-    /// Resolve a target path to database filename and path.
-    /// - If target is a .db file, extract filename and use as path
-    /// - If target is a directory, look for foiacquire.db inside
-    pub fn from_path(target: &Path) -> Self {
-        let target = if target.is_absolute() {
-            target.to_path_buf()
+impl ResolvedData {
+    /// Resolve a data path to database filename and path.
+    /// - If path is a .db file, extract filename and use as path
+    /// - If path is a directory, look for foiacquire.db inside
+    pub fn from_path(path: &Path) -> Self {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
-                .join(target)
+                .join(path)
         };
 
         // Check if it's a file (by extension or existence)
-        let is_db_file = target
+        let is_db_file = path
             .extension()
             .is_some_and(|ext| ext == "db" || ext == "sqlite" || ext == "sqlite3")
-            || (target.exists() && target.is_file());
+            || (path.exists() && path.is_file());
 
         if is_db_file {
-            let database_filename = target
+            let database_filename = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(DEFAULT_DATABASE_FILENAME)
                 .to_string();
             Self {
                 database_filename,
-                database_path: target,
+                database_path: path,
             }
         } else {
             // It's a directory
             let database_filename = DEFAULT_DATABASE_FILENAME.to_string();
-            let database_path = target.join(&database_filename);
+            let database_path = path.join(&database_filename);
             Self {
                 database_filename,
                 database_path,
@@ -727,32 +732,32 @@ impl DatabaseUrlEnv {
     }
 }
 
-/// Resolve target path to a data directory.
+/// Resolve data path to a directory.
 /// If path points to a .db file, returns its parent directory.
-fn resolve_target_to_data_dir(target: &Path) -> PathBuf {
-    let target = if target.is_absolute() {
-        target.to_path_buf()
+fn resolve_data_path_to_dir(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join(target)
+            .join(path)
     };
 
-    if target
+    if path
         .extension()
         .is_some_and(|ext| ext == "db" || ext == "sqlite" || ext == "sqlite3")
     {
-        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+        path.parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        target
+        path
     }
 }
 
 /// Load config from the appropriate source based on options.
 async fn load_config_from_sources(
     options: &LoadOptions,
-    target_data_dir: Option<&PathBuf>,
-    resolved_target: Option<&ResolvedTarget>,
+    data_dir_override: Option<&PathBuf>,
+    resolved_data: Option<&ResolvedData>,
 ) -> Config {
     // Priority 1: Explicit --config flag
     if let Some(ref config_path) = options.config_path {
@@ -761,16 +766,16 @@ async fn load_config_from_sources(
             .unwrap_or_else(|_| Config::default_with_env());
     }
 
-    // Priority 2-3: Config next to target, or from database history
-    if let Some(data_dir) = target_data_dir {
+    // Priority 2-3: Config next to data dir, or from database history
+    if let Some(data_dir) = data_dir_override {
         if let Some(config_path) = find_config_next_to_db(data_dir) {
-            tracing::debug!("Found config next to target: {}", config_path.display());
+            tracing::debug!("Found config next to data dir: {}", config_path.display());
             return Config::load_from_path(&config_path)
                 .await
                 .unwrap_or_else(|_| Config::default_with_env());
         }
 
-        if let Some(resolved) = resolved_target {
+        if let Some(resolved) = resolved_data {
             tracing::debug!(
                 "No config file found, trying database history: {}",
                 resolved.database_path.display()
@@ -791,23 +796,23 @@ async fn load_config_from_sources(
 pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Config) {
     let db_env = DatabaseUrlEnv::from_env();
 
-    let target_data_dir = options
-        .target
+    let data_dir_override = options
+        .data
         .as_ref()
-        .map(|t| resolve_target_to_data_dir(t));
+        .map(|d| resolve_data_path_to_dir(d));
 
     // Only resolve SQLite database paths when NOT using postgres
-    let resolved_target = if !db_env.is_postgres {
+    let resolved_data = if !db_env.is_postgres {
         options
-            .target
+            .data
             .as_ref()
-            .map(|t| ResolvedTarget::from_path(t))
+            .map(|d| ResolvedData::from_path(d))
     } else {
         None
     };
 
     let config =
-        load_config_from_sources(&options, target_data_dir.as_ref(), resolved_target.as_ref())
+        load_config_from_sources(&options, data_dir_override.as_ref(), resolved_data.as_ref())
             .await;
 
     let mut settings = Settings::default();
@@ -823,14 +828,14 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
 
     config.apply_to_settings(&mut settings, &base_dir);
 
-    // --target override takes precedence for data_dir and documents_dir
-    if let Some(data_dir) = target_data_dir {
+    // --data override takes precedence for data_dir and documents_dir
+    if let Some(data_dir) = data_dir_override {
         settings.data_dir = data_dir;
         settings.documents_dir = settings.data_dir.join("documents");
     }
 
     // Apply SQLite-specific settings if resolved (not using postgres)
-    if let Some(resolved) = resolved_target {
+    if let Some(resolved) = resolved_data {
         settings.database_filename = resolved.database_filename;
     }
 
@@ -847,6 +852,15 @@ pub async fn load_settings_with_options(options: LoadOptions) -> (Settings, Conf
     {
         tracing::debug!("Using RATE_LIMIT_BACKEND from environment: {}", backend);
         settings.rate_limit_backend = Some(backend);
+    }
+
+    // BROKER_URL environment variable takes precedence over config
+    if let Some(broker) = std::env::var("BROKER_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        tracing::debug!("Using BROKER_URL from environment: {}", broker);
+        settings.broker_url = Some(broker);
     }
 
     // Save config to database history (errors logged gracefully)

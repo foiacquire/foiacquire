@@ -168,6 +168,7 @@ impl DieselDocumentRepository {
         &self,
         page_id: i64,
         backend: &str,
+        model: Option<&str>,
         text: Option<&str>,
         confidence: Option<f32>,
         processing_time_ms: Option<i32>,
@@ -187,6 +188,7 @@ impl DieselDocumentRepository {
             processing_time_ms,
             error_message: None,
             created_at: &now,
+            model,
         };
 
         with_conn!(self.pool, conn, {
@@ -225,6 +227,7 @@ impl DieselDocumentRepository {
         &self,
         page_id: i64,
         backend: &str,
+        model: Option<&str>,
         error_message: &str,
     ) -> Result<(), DieselError> {
         let now = Utc::now().to_rfc3339();
@@ -240,6 +243,7 @@ impl DieselDocumentRepository {
             processing_time_ms: None,
             error_message: Some(error_message),
             created_at: &now,
+            model,
         };
 
         with_conn!(self.pool, conn, {
