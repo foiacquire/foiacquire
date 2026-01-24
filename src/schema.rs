@@ -108,6 +108,7 @@ diesel::table! {
         error_message -> Nullable<Text>,
         created_at -> Text,
         model -> Nullable<Text>,
+        image_hash -> Nullable<Text>,
     }
 }
 

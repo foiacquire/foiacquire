@@ -234,6 +234,7 @@ pub async fn api_reocr_document(
                             Some(&result.text),
                             result.confidence,
                             None, // processing_time_ms
+                            None, // image_hash - DeepSeek uses API, not local images
                         )
                         .await
                     {
@@ -250,7 +251,7 @@ pub async fn api_reocr_document(
                     tracing::error!("OCR failed for page {}: {:?}", page_number, e);
                     let _ = job_state
                         .doc_repo
-                        .store_page_ocr_result(page_id, "deepseek", None, None, None, None)
+                        .store_page_ocr_result(page_id, "deepseek", None, None, None, None, None)
                         .await;
                 }
                 Err(e) => {
