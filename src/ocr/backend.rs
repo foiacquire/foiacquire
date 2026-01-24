@@ -20,6 +20,12 @@ pub enum OcrError {
     #[error("OCR failed: {0}")]
     OcrFailed(String),
 
+    #[error("Rate limited by {backend}, retry after {retry_after_secs:?}s")]
+    RateLimited {
+        backend: OcrBackendType,
+        retry_after_secs: Option<u64>,
+    },
+
     #[error("Model not found: {0}")]
     ModelNotFound(String),
 

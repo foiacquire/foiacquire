@@ -17,9 +17,51 @@ use crate::scrapers::{ScraperConfig, ViaMode};
 /// Default refresh TTL in days (14 days).
 pub const DEFAULT_REFRESH_TTL_DAYS: u64 = 14;
 
+/// OCR backend configuration with fallback chain support.
+#[derive(Debug, Clone, Serialize, Deserialize, prefer::FromValue)]
+pub struct OcrConfig {
+    /// Ordered list of OCR backends to try (fallback chain).
+    /// First available backend that succeeds will be used.
+    /// On rate limit, tries next backend in chain.
+    /// Example: ["groq", "gemini", "tesseract"]
+    #[serde(default = "default_ocr_backends")]
+    #[prefer(default)]
+    pub backends: Vec<String>,
+
+    /// Always run tesseract as baseline, regardless of other backends.
+    /// Useful for comparison and deduplication via image hash.
+    #[serde(default)]
+    #[prefer(default)]
+    pub always_tesseract: bool,
+}
+
+fn default_ocr_backends() -> Vec<String> {
+    vec!["tesseract".to_string()]
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            backends: default_ocr_backends(),
+            always_tesseract: false,
+        }
+    }
+}
+
+impl OcrConfig {
+    /// Check if this is the default config.
+    pub fn is_default(&self) -> bool {
+        self.backends == default_ocr_backends() && !self.always_tesseract
+    }
+}
+
 /// Analysis configuration for text extraction methods.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, prefer::FromValue)]
 pub struct AnalysisConfig {
+    /// OCR backend configuration with fallback support.
+    #[serde(default, skip_serializing_if = "OcrConfig::is_default")]
+    #[prefer(default)]
+    pub ocr: OcrConfig,
     /// Named analysis methods (custom commands).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[prefer(default)]

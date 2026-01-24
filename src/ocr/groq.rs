@@ -206,16 +206,17 @@ impl GroqBackend {
 
             // Handle rate limiting (429)
             if response.status.as_u16() == 429 {
-                if attempt >= MAX_RETRIES {
-                    let body = response.text().await.unwrap_or_default();
-                    return Err(OcrError::OcrFailed(format!(
-                        "Groq rate limit exceeded after {} retries: {}",
-                        MAX_RETRIES, body
-                    )));
-                }
-
                 // Get Retry-After header
                 let retry_after = response.headers.get("retry-after").map(|s| s.as_str());
+                let retry_after_secs = retry_after.and_then(|s| s.parse::<u64>().ok());
+
+                if attempt >= MAX_RETRIES {
+                    // Return RateLimited error so fallback chain can try next backend
+                    return Err(OcrError::RateLimited {
+                        backend: OcrBackendType::Groq,
+                        retry_after_secs,
+                    });
+                }
 
                 let wait =
                     parse_retry_after(retry_after).unwrap_or_else(|| backoff_delay(attempt, 1000));
