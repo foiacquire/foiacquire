@@ -1,7 +1,8 @@
 //! OCR processing helper functions.
 
+use crate::config::OcrConfig;
 use crate::models::{Document, DocumentPage, PageOcrStatus};
-use crate::ocr::TextExtractor;
+use crate::ocr::{FallbackOcrBackend, OcrBackend, OcrConfig as OcrBackendConfig, TextExtractor};
 use crate::repository::DieselDocumentRepository;
 
 use super::types::PageOcrResult;
@@ -111,12 +112,36 @@ pub fn extract_document_text_per_page(
 /// If all pages for this document are now complete, the document is finalized
 /// (status set to OcrComplete, combined text saved).
 /// This function runs in a blocking context and uses the runtime handle to call async methods.
+///
+/// Uses the default tesseract backend. For configurable fallback chains, use
+/// `ocr_document_page_with_config`.
+#[allow(dead_code)]
 pub fn ocr_document_page(
     page: &DocumentPage,
     doc_repo: &DieselDocumentRepository,
     handle: &tokio::runtime::Handle,
 ) -> anyhow::Result<PageOcrResult> {
+    ocr_document_page_with_config(page, doc_repo, handle, &OcrConfig::default())
+}
+
+/// Run OCR on a page using a configured fallback chain.
+///
+/// Tries each backend in the chain until one succeeds. On rate limit errors,
+/// automatically falls back to the next backend.
+pub fn ocr_document_page_with_config(
+    page: &DocumentPage,
+    doc_repo: &DieselDocumentRepository,
+    handle: &tokio::runtime::Handle,
+    ocr_config: &OcrConfig,
+) -> anyhow::Result<PageOcrResult> {
     let extractor = TextExtractor::new();
+
+    // Create fallback backend from config
+    let fallback_backend = FallbackOcrBackend::from_config(
+        &ocr_config.backends,
+        ocr_config.always_tesseract,
+        OcrBackendConfig::default(),
+    );
 
     // Get the document to find the file path
     let doc = handle
@@ -136,18 +161,25 @@ pub fn ocr_document_page(
     // First, compute the image hash to check for existing OCR results
     let hash_result = extractor.get_pdf_page_hash(&version.file_path, page.page_number);
 
-    // Check if we already have a tesseract result for this exact image
+    // Check if we already have a result for this exact image from any backend in our chain
     let existing_result = if let Ok(ref image_hash) = hash_result {
-        handle
-            .block_on(doc_repo.find_ocr_result_by_image_hash(image_hash, "tesseract"))
-            .ok()
-            .flatten()
+        // Check each backend in the chain for existing results
+        let mut found = None;
+        for backend_name in &ocr_config.backends {
+            if let Ok(Some(result)) =
+                handle.block_on(doc_repo.find_ocr_result_by_image_hash(image_hash, backend_name))
+            {
+                found = Some((result, backend_name.clone()));
+                break;
+            }
+        }
+        found
     } else {
         None
     };
 
-    if let Some(existing) = existing_result {
-        // Reuse existing OCR result - skip expensive tesseract call
+    if let Some((existing, backend_name)) = existing_result {
+        // Reuse existing OCR result - skip expensive OCR call
         let ocr_text = existing.text.unwrap_or_default();
         let ocr_chars = ocr_text.chars().filter(|c| !c.is_whitespace()).count();
         let pdf_chars = page
@@ -169,8 +201,8 @@ pub fn ocr_document_page(
         // Store reference to the deduplicated result
         let _ = handle.block_on(doc_repo.store_page_ocr_result(
             page.id,
-            "tesseract",
-            None,
+            &backend_name,
+            existing.model.as_deref(),
             Some(&ocr_text),
             existing.confidence,
             existing.processing_time_ms,
@@ -178,13 +210,19 @@ pub fn ocr_document_page(
         ));
 
         tracing::debug!(
-            "Reused existing OCR result for page {} (hash match)",
+            "Reused existing {} OCR result for page {} (hash match)",
+            backend_name,
             page.page_number
         );
     } else {
-        // No existing result - run OCR
-        match extractor.ocr_pdf_page_with_hash(&version.file_path, page.page_number) {
-            Ok((ocr_text, image_hash)) => {
+        // No existing result - run OCR with fallback chain
+        // First get the image hash for storage
+        let image_hash = hash_result.ok();
+
+        match fallback_backend.ocr_pdf_page(&version.file_path, page.page_number) {
+            Ok(result) => {
+                let ocr_text = result.text;
+                let backend_name = result.backend.as_str();
                 let ocr_chars = ocr_text.chars().filter(|c| !c.is_whitespace()).count();
                 let pdf_chars = page
                     .pdf_text
@@ -205,16 +243,22 @@ pub fn ocr_document_page(
                     page.pdf_text.clone()
                 };
 
-                // Store tesseract result with image hash for future deduplication
+                // Store result with actual backend name and image hash
                 let _ = handle.block_on(doc_repo.store_page_ocr_result(
                     page.id,
-                    "tesseract",
-                    None, // tesseract doesn't have model variants
+                    backend_name,
+                    result.model.as_deref(),
                     Some(&ocr_text),
-                    None, // TODO: could extract confidence from tesseract
-                    None, // TODO: could track processing time
-                    Some(&image_hash),
+                    result.confidence,
+                    Some(result.processing_time_ms as i32),
+                    image_hash.as_deref(),
                 ));
+
+                tracing::debug!(
+                    "OCR completed for page {} using {} backend",
+                    page.page_number,
+                    backend_name
+                );
             }
             Err(e) => {
                 tracing::debug!(

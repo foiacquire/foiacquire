@@ -343,7 +343,6 @@ impl LlmDeviceConfig {
 
 // === LlmConfig (combined) implementations ===
 
-
 impl LlmConfig {
     /// Create from app config (DB) and device config (env).
     pub fn new(app: LlmAppConfig, device: LlmDeviceConfig) -> Self {
