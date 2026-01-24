@@ -97,6 +97,7 @@ pub fn extract_document_text_per_page(
                 Some(&pdf_text),
                 None, // no confidence score for pdftotext
                 None, // no processing time tracked
+                None, // no image hash for pdftotext (text extraction)
             ));
         }
 
@@ -128,53 +129,105 @@ pub fn ocr_document_page(
         .find(|v| v.id == page.version_id)
         .ok_or_else(|| anyhow::anyhow!("Version not found"))?;
 
-    // Run OCR on this page
+    // Run OCR on this page with image hash deduplication
     let mut updated_page = page.clone();
     let mut improved = false;
 
-    match extractor.ocr_pdf_page(&version.file_path, page.page_number) {
-        Ok(ocr_text) => {
-            let ocr_chars = ocr_text.chars().filter(|c| !c.is_whitespace()).count();
-            let pdf_chars = page
-                .pdf_text
-                .as_ref()
-                .map(|t| t.chars().filter(|c| !c.is_whitespace()).count())
-                .unwrap_or(0);
+    // First, compute the image hash to check for existing OCR results
+    let hash_result = extractor.get_pdf_page_hash(&version.file_path, page.page_number);
 
-            // Track if OCR provided more content (for reporting)
-            improved = ocr_chars > pdf_chars + (pdf_chars / 5);
-
-            updated_page.ocr_text = Some(ocr_text.clone());
-            updated_page.ocr_status = PageOcrStatus::OcrComplete;
-
-            // Prefer OCR over extracted text (unless OCR is empty)
-            updated_page.final_text = if ocr_chars > 0 {
-                Some(ocr_text.clone())
-            } else {
-                page.pdf_text.clone()
-            };
-
-            // Store tesseract result in page_ocr_results for comparison
-            let _ = handle.block_on(doc_repo.store_page_ocr_result(
-                page.id,
-                "tesseract",
-                None, // tesseract doesn't have model variants
-                Some(&ocr_text),
-                None, // TODO: could extract confidence from tesseract
-                None, // TODO: could track processing time
-            ));
-        }
-        Err(e) => {
-            tracing::debug!(
-                "OCR failed for page {}, using PDF text: {}",
-                page.page_number,
-                e
-            );
-            // Mark as failed but still set final_text to PDF text so document can be finalized
-            updated_page.ocr_status = PageOcrStatus::Failed;
-            updated_page.final_text = page.pdf_text.clone();
-        }
+    // Check if we already have a tesseract result for this exact image
+    let existing_result = if let Ok(ref image_hash) = hash_result {
+        handle
+            .block_on(doc_repo.find_ocr_result_by_image_hash(image_hash, "tesseract"))
+            .ok()
+            .flatten()
+    } else {
+        None
     };
+
+    if let Some(existing) = existing_result {
+        // Reuse existing OCR result - skip expensive tesseract call
+        let ocr_text = existing.text.unwrap_or_default();
+        let ocr_chars = ocr_text.chars().filter(|c| !c.is_whitespace()).count();
+        let pdf_chars = page
+            .pdf_text
+            .as_ref()
+            .map(|t| t.chars().filter(|c| !c.is_whitespace()).count())
+            .unwrap_or(0);
+
+        improved = ocr_chars > pdf_chars + (pdf_chars / 5);
+
+        updated_page.ocr_text = Some(ocr_text.clone());
+        updated_page.ocr_status = PageOcrStatus::OcrComplete;
+        updated_page.final_text = if ocr_chars > 0 {
+            Some(ocr_text.clone())
+        } else {
+            page.pdf_text.clone()
+        };
+
+        // Store reference to the deduplicated result
+        let _ = handle.block_on(doc_repo.store_page_ocr_result(
+            page.id,
+            "tesseract",
+            None,
+            Some(&ocr_text),
+            existing.confidence,
+            existing.processing_time_ms,
+            hash_result.ok().as_deref(),
+        ));
+
+        tracing::debug!(
+            "Reused existing OCR result for page {} (hash match)",
+            page.page_number
+        );
+    } else {
+        // No existing result - run OCR
+        match extractor.ocr_pdf_page_with_hash(&version.file_path, page.page_number) {
+            Ok((ocr_text, image_hash)) => {
+                let ocr_chars = ocr_text.chars().filter(|c| !c.is_whitespace()).count();
+                let pdf_chars = page
+                    .pdf_text
+                    .as_ref()
+                    .map(|t| t.chars().filter(|c| !c.is_whitespace()).count())
+                    .unwrap_or(0);
+
+                // Track if OCR provided more content (for reporting)
+                improved = ocr_chars > pdf_chars + (pdf_chars / 5);
+
+                updated_page.ocr_text = Some(ocr_text.clone());
+                updated_page.ocr_status = PageOcrStatus::OcrComplete;
+
+                // Prefer OCR over extracted text (unless OCR is empty)
+                updated_page.final_text = if ocr_chars > 0 {
+                    Some(ocr_text.clone())
+                } else {
+                    page.pdf_text.clone()
+                };
+
+                // Store tesseract result with image hash for future deduplication
+                let _ = handle.block_on(doc_repo.store_page_ocr_result(
+                    page.id,
+                    "tesseract",
+                    None, // tesseract doesn't have model variants
+                    Some(&ocr_text),
+                    None, // TODO: could extract confidence from tesseract
+                    None, // TODO: could track processing time
+                    Some(&image_hash),
+                ));
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "OCR failed for page {}, using PDF text: {}",
+                    page.page_number,
+                    e
+                );
+                // Mark as failed but still set final_text to PDF text so document can be finalized
+                updated_page.ocr_status = PageOcrStatus::Failed;
+                updated_page.final_text = page.pdf_text.clone();
+            }
+        }
+    }
 
     handle.block_on(doc_repo.save_page(&updated_page))?;
 

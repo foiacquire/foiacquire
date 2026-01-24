@@ -257,6 +257,7 @@ pub struct PageOcrResultRecord {
     pub error_message: Option<String>,
     pub created_at: String,
     pub model: Option<String>,
+    pub image_hash: Option<String>,
 }
 
 /// New page OCR result for insertion.
@@ -274,6 +275,7 @@ pub struct NewPageOcrResult<'a> {
     pub error_message: Option<&'a str>,
     pub created_at: &'a str,
     pub model: Option<&'a str>,
+    pub image_hash: Option<&'a str>,
 }
 
 /// Config history record from the database.
