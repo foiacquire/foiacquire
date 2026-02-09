@@ -302,16 +302,31 @@ pub async fn api_type_stats(
 ) -> impl IntoResponse {
     use crate::utils::MimeCategory;
 
-    let stats = state
-        .doc_repo
-        .get_category_stats(params.source.as_deref())
-        .await
-        .unwrap_or_default();
+    // Use cache for unfiltered requests (the common case from the browse page)
+    let stats = if params.source.is_none() {
+        match state.stats_cache.get_category_stats() {
+            Some(cached) => cached,
+            None => {
+                let fresh = state
+                    .doc_repo
+                    .get_category_stats(None)
+                    .await
+                    .unwrap_or_default();
+                state.stats_cache.set_category_stats(fresh.clone());
+                fresh
+            }
+        }
+    } else {
+        state
+            .doc_repo
+            .get_category_stats(params.source.as_deref())
+            .await
+            .unwrap_or_default()
+    };
 
     let stats_json: Vec<_> = stats
         .into_iter()
         .map(|(category, count)| {
-            // Look up display name from MimeCategory
             let display_name = MimeCategory::from_id(&category)
                 .map(|c| c.display_name())
                 .unwrap_or(&category);
