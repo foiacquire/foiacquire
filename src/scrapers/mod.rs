@@ -13,7 +13,10 @@ pub use archive::{ArchiveError, ArchiveRegistry, ArchiveSource, SnapshotInfo, Wa
 pub use browser::BrowserFetcher;
 #[cfg(feature = "browser")]
 pub use browser::{BrowserEngineConfig, BrowserEngineType};
-pub use config::{ScraperConfig, ViaMode};
+#[allow(unused_imports)]
+pub use config::ScraperConfig;
+#[allow(unused_imports)]
+pub use config::ViaMode;
 pub use configurable::ConfigurableScraper;
 pub use crate::http_client::{HttpClient, HttpResponse};
 

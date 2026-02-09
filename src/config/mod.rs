@@ -2,6 +2,7 @@
 
 mod analysis;
 mod loader;
+pub mod scraper;
 mod settings;
 
 use std::collections::HashMap;
@@ -15,10 +16,10 @@ use crate::llm::LlmConfig;
 use crate::prefer_db::FoiaConfigLoader;
 use crate::privacy::PrivacyConfig;
 use crate::repository::util::validate_database_url;
-use crate::scrapers::{ScraperConfig, ViaMode};
 
 pub use analysis::{AnalysisConfig, AnalysisMethodConfig, OcrConfig};
 pub use loader::{load_settings_with_options, LoadOptions};
+pub use scraper::{ScraperConfig, ViaMode};
 pub use settings::Settings;
 
 /// Default refresh TTL in days (14 days).
