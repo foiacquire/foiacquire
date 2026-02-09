@@ -47,6 +47,8 @@ pub struct StatsCache {
     all_tags: RwLock<Option<CacheEntry<Vec<(String, usize)>>>>,
     /// Source counts: source_id -> count
     source_counts: RwLock<Option<CacheEntry<HashMap<String, u64>>>>,
+    /// Category stats: category_id -> count
+    category_stats: RwLock<Option<CacheEntry<HashMap<String, u64>>>>,
     /// TTL for cache entries
     ttl: Duration,
 }
@@ -57,6 +59,7 @@ impl StatsCache {
         Self {
             all_tags: RwLock::new(None),
             source_counts: RwLock::new(None),
+            category_stats: RwLock::new(None),
             ttl: DEFAULT_TTL,
         }
     }
@@ -88,6 +91,21 @@ impl StatsCache {
     pub fn set_source_counts(&self, counts: HashMap<String, u64>) {
         if let Ok(mut guard) = self.source_counts.write() {
             *guard = Some(CacheEntry::new(counts, self.ttl));
+        }
+    }
+
+    /// Get cached category stats, or None if expired/missing.
+    pub fn get_category_stats(&self) -> Option<HashMap<String, u64>> {
+        self.category_stats
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|e| e.get()))
+    }
+
+    /// Set category stats in cache.
+    pub fn set_category_stats(&self, stats: HashMap<String, u64>) {
+        if let Ok(mut guard) = self.category_stats.write() {
+            *guard = Some(CacheEntry::new(stats, self.ttl));
         }
     }
 }

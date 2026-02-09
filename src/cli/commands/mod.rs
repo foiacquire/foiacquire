@@ -783,20 +783,21 @@ pub async fn run() -> anyhow::Result<()> {
     // Show Tor legality warning (can be disabled)
     config.privacy.show_tor_legal_warning();
 
-    // Check Tor availability when needed (skip for commands that don't need network)
+    // Check Tor availability when needed (skip for commands that don't need outbound network)
     let needs_tor = !matches!(
         cli.command,
-        Commands::Init | Commands::Source { .. } | Commands::Config { .. }
+        Commands::Init | Commands::Source { .. } | Commands::Config { .. } | Commands::Serve { .. }
     );
     if needs_tor {
         if let Err(e) = config.privacy.check_tor_availability() {
             eprintln!("{}", e);
             std::process::exit(1);
         }
-    }
 
-    // Enforce security warning with countdown if insecure (cannot be disabled)
-    config.privacy.enforce_security_warning().await;
+        // Enforce security warning with countdown if insecure (cannot be disabled).
+        // Serve has its own hidden service security warning, so skip here.
+        config.privacy.enforce_security_warning().await;
+    }
 
     match cli.command {
         Commands::Init => init::cmd_init(&settings).await,

@@ -8,12 +8,10 @@ use axum::{
 use serde::Deserialize;
 
 use super::super::template_structs::{
-    ActiveTagDisplay, BrowseTemplate, CategoryWithCount, DocumentRow, ErrorTemplate, SourceOption,
-    TagWithCount,
+    ActiveTagDisplay, BrowseTemplate, DocumentRow, ErrorTemplate,
 };
 use super::super::AppState;
 use super::helpers::{paginate, parse_csv_param_limit};
-use crate::utils::MimeCategory;
 
 /// Query params for the unified browse page.
 #[derive(Debug, Clone, Deserialize)]
@@ -35,11 +33,10 @@ pub async fn browse_documents(
     let types = parse_csv_param_limit(params.types.as_ref(), Some(20));
     let tags = parse_csv_param_limit(params.tags.as_ref(), Some(50));
 
-    let has_filters = !types.is_empty() || !tags.is_empty() || params.q.is_some();
-
-    // Run all database queries concurrently
+    // Fetch only document rows and count — tags, sources, and type stats
+    // are loaded client-side via cached API endpoints.
     let offset = page.saturating_sub(1) * per_page;
-    let (browse_result, count_result, cat_stats_result, tags_and_sources) = tokio::join!(
+    let (browse_result, count_result) = tokio::join!(
         state.doc_repo.browse_fast(
             params.source.as_deref(),
             None,
@@ -55,28 +52,6 @@ pub async fn browse_documents(
             &tags,
             params.q.as_deref(),
         ),
-        state.doc_repo.get_category_stats(params.source.as_deref()),
-        async {
-            if has_filters {
-                return (Vec::new(), Vec::new());
-            }
-            let (tags_result, counts, source_list) = tokio::join!(
-                state.doc_repo.get_all_tags(),
-                state.doc_repo.get_all_source_counts(),
-                state.source_repo.get_all(),
-            );
-            let tags = tags_result.unwrap_or_default();
-            let counts = counts.unwrap_or_default();
-            let sources: Vec<_> = source_list
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| {
-                    let count = counts.get(&s.id).copied().unwrap_or(0);
-                    (s.id, s.name, count)
-                })
-                .collect();
-            (tags, sources)
-        },
     );
 
     let browse_rows = match browse_result {
@@ -94,10 +69,6 @@ pub async fn browse_documents(
         Ok(count) => count,
         Err(_) => browse_rows.len() as u64,
     };
-
-    let type_stats: Vec<(String, u64)> = cat_stats_result.unwrap_or_default().into_iter().collect();
-
-    let (all_tags, sources) = tags_and_sources;
 
     // Convert BrowseRows to DocumentRows (fast path - no Document model needed)
     let doc_rows: Vec<DocumentRow> = browse_rows
@@ -139,47 +110,6 @@ pub async fn browse_documents(
         }
     };
 
-    // Build categories for type toggles
-    let categories: Vec<CategoryWithCount> = MimeCategory::all()
-        .iter()
-        .filter_map(|(cat_id, cat_name)| {
-            let count = type_stats
-                .iter()
-                .find(|(c, _)| c == *cat_id)
-                .map(|(_, n)| *n)
-                .unwrap_or(0);
-            if count > 0 {
-                let checked = types.is_empty() || types.iter().any(|t| t == *cat_id);
-                Some(CategoryWithCount {
-                    id: cat_id.to_string(),
-                    name: cat_name.to_string(),
-                    count,
-                    active: false,
-                    checked,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Build source options
-    let source_options: Vec<SourceOption> = sources
-        .iter()
-        .map(|(id, name, count)| SourceOption {
-            id: id.clone(),
-            name: name.clone(),
-            count: *count,
-            selected: params.source.as_deref() == Some(id.as_str()),
-        })
-        .collect();
-
-    // Build tag list
-    let all_tags_with_counts: Vec<TagWithCount> = all_tags
-        .iter()
-        .map(|t| TagWithCount::new(t.clone(), 0))
-        .collect();
-
     // Active tags display
     let active_tags_display: Vec<ActiveTagDisplay> = tags
         .iter()
@@ -212,13 +142,13 @@ pub async fn browse_documents(
     let template = BrowseTemplate {
         title: "Browse",
         documents: doc_rows,
-        categories,
-        type_stats_empty: type_stats.is_empty(),
-        sources: source_options,
-        sources_empty: sources.is_empty(),
+        categories: Vec::new(),
+        type_stats_empty: true,
+        sources: Vec::new(),
+        sources_empty: true,
         has_active_source: params.source.is_some(),
         active_source_val: params.source.clone().unwrap_or_default(),
-        all_tags: all_tags_with_counts,
+        all_tags: Vec::new(),
         active_tags_display,
         has_prev_cursor: prev_cursor.is_some(),
         prev_cursor_val: prev_cursor.unwrap_or_default(),

@@ -254,7 +254,6 @@
 
     async function loadSources() {
         const select = document.getElementById('source-select');
-        if (select.options.length > 2) return;
 
         try {
             const res = await fetch('/api/sources');
@@ -273,7 +272,6 @@
 
     async function loadTags() {
         const datalist = document.getElementById('tag-list');
-        if (datalist.options.length > 0) return;
 
         try {
             const res = await fetch('/api/tags');
