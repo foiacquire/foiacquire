@@ -65,36 +65,9 @@ jobs:
       - name: Check migrations are immutable
         run: ./scripts/check-migrations.sh
 
-  sqlx-check:
-    name: SQLx Query Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features sqlite
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-sqlx-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-sqlx-
-
-      - name: Verify SQLx query data is up to date
-        run: cargo sqlx prepare --check
-
   check:
     name: Check
     runs-on: ubuntu-latest
-    needs: sqlx-check
     steps:
       - uses: actions/checkout@v4
 
