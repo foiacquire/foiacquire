@@ -1266,40 +1266,65 @@ impl DieselDocumentRepository {
     /// Get documents needing OCR.
     #[allow(dead_code)]
     pub async fn get_needing_ocr(&self, limit: usize) -> Result<Vec<Document>, DieselError> {
-        self.get_needing_ocr_filtered(limit, None).await
+        self.get_needing_ocr_filtered(limit, None, None, None).await
     }
 
-    /// Get documents needing OCR with optional mime type filter.
+    /// Get documents needing OCR with optional source/mime/cursor filters.
+    /// Uses cursor-based pagination: pass `after_id` to fetch the next page.
     pub async fn get_needing_ocr_filtered(
         &self,
         limit: usize,
+        source_id: Option<&str>,
         mime_type: Option<&str>,
+        after_id: Option<&str>,
     ) -> Result<Vec<Document>, DieselError> {
         use crate::schema::document_versions;
 
         let records: Vec<DocumentRecord> = with_conn!(self.pool, conn, {
             if let Some(mime) = mime_type {
-                // Join with versions to filter by mime type
-                let doc_ids: Vec<String> = documents::table
+                let mut query = documents::table
                     .inner_join(
                         document_versions::table
                             .on(document_versions::document_id.eq(documents::id)),
                     )
                     .filter(documents::status.eq_any(vec!["pending", "downloaded"]))
                     .filter(document_versions::mime_type.eq(mime))
+                    .into_boxed();
+
+                if let Some(sid) = source_id {
+                    query = query.filter(documents::source_id.eq(sid));
+                }
+                if let Some(cursor) = after_id {
+                    query = query.filter(documents::id.gt(cursor));
+                }
+
+                let doc_ids: Vec<String> = query
                     .select(documents::id)
                     .distinct()
+                    .order(documents::id.asc())
                     .limit(limit as i64)
                     .load(&mut conn)
                     .await?;
 
                 documents::table
                     .filter(documents::id.eq_any(doc_ids))
+                    .order(documents::id.asc())
                     .load(&mut conn)
                     .await
             } else {
-                documents::table
+                let mut query = documents::table
                     .filter(documents::status.eq_any(vec!["pending", "downloaded"]))
+                    .into_boxed();
+
+                if let Some(sid) = source_id {
+                    query = query.filter(documents::source_id.eq(sid));
+                }
+                if let Some(cursor) = after_id {
+                    query = query.filter(documents::id.gt(cursor));
+                }
+
+                query
+                    .order(documents::id.asc())
                     .limit(limit as i64)
                     .load(&mut conn)
                     .await

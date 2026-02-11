@@ -545,6 +545,13 @@ See https://rustsec.org/advisories/RUSTSEC-2023-0071 for details."#
     ///
     /// When compiled with `unsafe-dev` feature, warnings are skipped entirely.
     pub async fn enforce_security_warning(&self) {
+        tracing::debug!(
+            "Security check: direct={}, obfuscation={}, warning_delay={}",
+            self.direct,
+            self.obfuscation,
+            self.warning_delay
+        );
+
         // Skip all warnings in unsafe-dev mode (for development only)
         #[cfg(feature = "unsafe-dev")]
         return;
