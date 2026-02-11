@@ -383,13 +383,8 @@ impl DieselDocumentRepository {
             }
         );
 
-        let mut docs = Vec::with_capacity(ids.len());
-        for row in ids {
-            if let Ok(Some(doc)) = self.get(&row.id).await {
-                docs.push(doc);
-            }
-        }
-        Ok(docs)
+        let doc_ids: Vec<String> = ids.into_iter().map(|r| r.id).collect();
+        self.get_batch(&doc_ids).await
     }
 
     // ========================================================================
@@ -479,12 +474,7 @@ impl DieselDocumentRepository {
                 .await
         })?;
 
-        let mut docs = Vec::with_capacity(records.len());
-        for record in records {
-            let versions = self.load_versions(&record.id).await?;
-            docs.push(Self::record_to_document(record, versions));
-        }
-        Ok(docs)
+        self.records_to_documents(records).await
     }
 
     /// Browse documents.
@@ -920,13 +910,8 @@ impl DieselDocumentRepository {
             }
         );
 
-        let mut docs = Vec::with_capacity(ids.len());
-        for row in ids {
-            if let Ok(Some(doc)) = self.get(&row.id).await {
-                docs.push(doc);
-            }
-        }
-        Ok(docs)
+        let doc_ids: Vec<String> = ids.into_iter().map(|r| r.id).collect();
+        self.get_batch(&doc_ids).await
     }
 
     /// Get documents by MIME type category.
@@ -969,13 +954,8 @@ impl DieselDocumentRepository {
                 .unwrap_or_default()
         });
 
-        let mut docs = Vec::with_capacity(ids.len());
-        for row in ids {
-            if let Ok(Some(doc)) = self.get(&row.id).await {
-                docs.push(doc);
-            }
-        }
-        Ok(docs)
+        let doc_ids: Vec<String> = ids.into_iter().map(|r| r.id).collect();
+        self.get_batch(&doc_ids).await
     }
 
     // ========================================================================
@@ -1148,13 +1128,8 @@ impl DieselDocumentRepository {
             }
         );
 
-        let mut docs = Vec::with_capacity(ids.len());
-        for row in ids {
-            if let Ok(Some(doc)) = self.get(&row.id).await {
-                docs.push(doc);
-            }
-        }
-        Ok(docs)
+        let doc_ids: Vec<String> = ids.into_iter().map(|r| r.id).collect();
+        self.get_batch(&doc_ids).await
     }
 
     /// Update estimated date in document metadata.
@@ -1255,12 +1230,7 @@ impl DieselDocumentRepository {
                 .await
         })?;
 
-        let mut docs = Vec::with_capacity(records.len());
-        for record in records {
-            let versions = self.load_versions(&record.id).await?;
-            docs.push(Self::record_to_document(record, versions));
-        }
-        Ok(docs)
+        self.records_to_documents(records).await
     }
 
     /// Get documents needing OCR.
@@ -1331,12 +1301,7 @@ impl DieselDocumentRepository {
             }
         })?;
 
-        let mut docs = Vec::with_capacity(records.len());
-        for record in records {
-            let versions = self.load_versions(&record.id).await?;
-            docs.push(Self::record_to_document(record, versions));
-        }
-        Ok(docs)
+        self.records_to_documents(records).await
     }
 
     /// Finalize document - mark as indexed.

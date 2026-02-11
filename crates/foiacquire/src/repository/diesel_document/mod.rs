@@ -58,6 +58,42 @@ impl DieselDocumentRepository {
     // Core CRUD Operations
     // ========================================================================
 
+    /// Convert document records to documents with batch-loaded versions.
+    ///
+    /// Single query for all versions instead of one query per document.
+    async fn records_to_documents(
+        &self,
+        records: Vec<DocumentRecord>,
+    ) -> Result<Vec<Document>, DieselError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let doc_ids: Vec<String> = records.iter().map(|r| r.id.clone()).collect();
+        let mut versions_map = self.load_versions_batch(&doc_ids).await?;
+        Ok(records
+            .into_iter()
+            .map(|record| {
+                let versions = versions_map.remove(&record.id).unwrap_or_default();
+                Self::record_to_document(record, versions)
+            })
+            .collect())
+    }
+
+    /// Get multiple documents by IDs in a single batch query.
+    pub async fn get_batch(&self, ids: &[String]) -> Result<Vec<Document>, DieselError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let records: Vec<DocumentRecord> = with_conn!(self.pool, conn, {
+            documents::table
+                .filter(documents::id.eq_any(ids))
+                .load(&mut conn)
+                .await
+        })?;
+
+        self.records_to_documents(records).await
+    }
+
     /// Get a document by ID.
     pub async fn get(&self, id: &str) -> Result<Option<Document>, DieselError> {
         let record: Option<DocumentRecord> = with_conn!(self.pool, conn, {
@@ -83,12 +119,7 @@ impl DieselDocumentRepository {
                 .await
         })?;
 
-        let mut docs = Vec::with_capacity(records.len());
-        for record in records {
-            let versions = self.load_versions(&record.id).await?;
-            docs.push(Self::record_to_document(record, versions));
-        }
-        Ok(docs)
+        self.records_to_documents(records).await
     }
 
     /// Get documents by URL.
@@ -100,12 +131,7 @@ impl DieselDocumentRepository {
                 .await
         })?;
 
-        let mut docs = Vec::with_capacity(records.len());
-        for record in records {
-            let versions = self.load_versions(&record.id).await?;
-            docs.push(Self::record_to_document(record, versions));
-        }
-        Ok(docs)
+        self.records_to_documents(records).await
     }
 
     /// Check if a document exists.
@@ -499,7 +525,7 @@ impl DieselDocumentRepository {
             id: record.id as i64,
             content_hash: record.content_hash,
             content_hash_blake3: record.content_hash_blake3,
-            file_path: PathBuf::from(record.file_path),
+            file_path: record.file_path.map(PathBuf::from),
             file_size: record.file_size as u64,
             mime_type: record.mime_type,
             acquired_at: parse_datetime(&record.acquired_at),
@@ -509,6 +535,7 @@ impl DieselDocumentRepository {
             page_count: record.page_count.map(|c| c as u32),
             archive_snapshot_id: record.archive_snapshot_id,
             earliest_archived_at: parse_datetime_opt(record.earliest_archived_at),
+            dedup_index: record.dedup_index.map(|i| i as u32),
         }
     }
 
@@ -641,7 +668,7 @@ mod tests {
                 document_id TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 content_hash_blake3 TEXT,
-                file_path TEXT NOT NULL,
+                file_path TEXT,
                 file_size INTEGER NOT NULL,
                 mime_type TEXT NOT NULL,
                 acquired_at TEXT NOT NULL,
@@ -650,7 +677,8 @@ mod tests {
                 server_date TEXT,
                 page_count INTEGER,
                 archive_snapshot_id INTEGER,
-                earliest_archived_at TEXT
+                earliest_archived_at TEXT,
+                dedup_index INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS document_pages (
@@ -754,7 +782,7 @@ mod tests {
             id: 1,
             content_hash: "abc123".to_string(),
             content_hash_blake3: Some("def456".to_string()),
-            file_path: PathBuf::from("/tmp/test.pdf"),
+            file_path: None,
             file_size: 1024,
             mime_type: "application/pdf".to_string(),
             acquired_at: Utc::now(),
@@ -764,6 +792,7 @@ mod tests {
             page_count: None,
             archive_snapshot_id: None,
             earliest_archived_at: None,
+            dedup_index: None,
         };
         repo.add_version("doc-2", &version).await.unwrap();
 
