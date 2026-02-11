@@ -176,7 +176,12 @@ impl AnalysisService {
 
         let docs = self
             .doc_repo
-            .get_needing_ocr_filtered(if limit > 0 { limit.min(10000) } else { 10000 }, mime_type)
+            .get_needing_ocr_filtered(
+                if limit > 0 { limit.min(10000) } else { 10000 },
+                source_id,
+                mime_type,
+                None,
+            )
             .await?;
         let mut checked = 0;
         let mut fixed = 0;
@@ -310,6 +315,7 @@ impl AnalysisService {
         let processed = Arc::new(AtomicUsize::new(0));
 
         let batch_size = workers * 4;
+        let mut cursor: Option<String> = None;
 
         loop {
             let current_processed = processed.load(Ordering::Relaxed);
@@ -322,27 +328,31 @@ impl AnalysisService {
 
             let docs = self
                 .doc_repo
-                .get_needing_ocr_filtered(batch_limit, mime_type)
+                .get_needing_ocr_filtered(batch_limit, source_id, mime_type, cursor.as_deref())
                 .await?;
 
             if docs.is_empty() {
-                break; // No more documents to process
+                break;
+            }
+
+            // Advance cursor past this batch regardless of skip/process
+            if let Some(last) = docs.last() {
+                cursor = Some(last.id.clone());
             }
 
             let mut handles = Vec::with_capacity(docs.len().min(workers));
 
             for doc in docs {
-                let current = processed.load(Ordering::Relaxed);
-                if current >= max_to_process {
-                    break;
-                }
-
                 // Skip documents whose files aren't on disk yet
                 let file_available = doc.current_version().is_some_and(|v| v.file_path.exists());
                 if !file_available {
                     tracing::debug!("Skipping {}: file not on disk yet", doc.title);
                     skipped_missing.fetch_add(1, Ordering::Relaxed);
-                    processed.fetch_add(1, Ordering::Relaxed);
+                    let _ = event_tx
+                        .send(AnalysisEvent::DocumentSkipped {
+                            document_id: doc.id.clone(),
+                        })
+                        .await;
                     continue;
                 }
 
@@ -357,7 +367,6 @@ impl AnalysisService {
                     let doc_id = doc.id.clone();
                     let title = doc.title.clone();
 
-                    // Send start event (blocking send since we're in spawn_blocking)
                     let _ = futures::executor::block_on(event_tx.send(
                         AnalysisEvent::DocumentStarted {
                             document_id: doc_id.clone(),
@@ -365,7 +374,6 @@ impl AnalysisService {
                         },
                     ));
 
-                    // Get tokio runtime handle to run async code in blocking context
                     let handle = tokio::runtime::Handle::current();
 
                     match extract_document_text_per_page(&doc, &doc_repo, &handle) {

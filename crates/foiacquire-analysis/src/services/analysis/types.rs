@@ -27,6 +27,8 @@ pub enum AnalysisEvent {
     },
     /// Document extraction failed
     DocumentFailed { document_id: String, error: String },
+    /// Document skipped (file not on disk)
+    DocumentSkipped { document_id: String },
     /// Phase 1 complete
     Phase1Complete {
         succeeded: usize,

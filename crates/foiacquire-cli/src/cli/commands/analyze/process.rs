@@ -198,6 +198,11 @@ pub async fn cmd_analyze(
                             );
                         }
                     }
+                    AnalysisEvent::DocumentSkipped { .. } => {
+                        if let Some(ref progress) = *pb_clone.lock().await {
+                            progress.inc(1);
+                        }
+                    }
                     AnalysisEvent::Phase1Complete {
                         skipped_missing, ..
                     } => {
