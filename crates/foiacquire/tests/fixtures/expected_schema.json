@@ -779,6 +779,13 @@
           "default_value": null,
           "primary_key": false
         },
+        "dedup_index": {
+          "name": "dedup_index",
+          "col_type": "INTEGER",
+          "not_null": false,
+          "default_value": null,
+          "primary_key": false
+        },
         "document_id": {
           "name": "document_id",
           "col_type": "TEXT",
@@ -796,7 +803,7 @@
         "file_path": {
           "name": "file_path",
           "col_type": "TEXT",
-          "not_null": true,
+          "not_null": false,
           "default_value": null,
           "primary_key": false
         },
