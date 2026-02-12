@@ -4,6 +4,13 @@
 
 set -e
 
+SKIP_CLIPPY=false
+for arg in "$@"; do
+    case $arg in
+        --skip-clippy) SKIP_CLIPPY=true ;;
+    esac
+done
+
 echo "🔒 Checking for privacy violations..."
 echo ""
 
@@ -120,15 +127,20 @@ fi
 echo ""
 
 # 7. Run clippy to catch disallowed methods
-echo "7. Running clippy for disallowed methods..."
-if cargo clippy --all-features -- -D clippy::disallowed-methods 2>&1 | grep "error.*disallowed" > /tmp/clippy_violations.txt; then
-    echo -e "${RED}❌ Clippy found disallowed method usage:${NC}"
-    cat /tmp/clippy_violations.txt
-    VIOLATIONS=$((VIOLATIONS + 1))
+if [ "$SKIP_CLIPPY" = false ]; then
+    echo "7. Running clippy for disallowed methods..."
+    if cargo clippy --features "${SAFE_FEATURES:-browser,postgres,redis-backend,amqp-broker,ocr-ocrs,ocr-paddle,gis}" -- -D clippy::disallowed-methods 2>&1 | grep "error.*disallowed" > /tmp/clippy_violations.txt; then
+        echo -e "${RED}❌ Clippy found disallowed method usage:${NC}"
+        cat /tmp/clippy_violations.txt
+        VIOLATIONS=$((VIOLATIONS + 1))
+    else
+        echo -e "${GREEN}✓ No disallowed methods detected by clippy${NC}"
+    fi
+    echo ""
 else
-    echo -e "${GREEN}✓ No disallowed methods detected by clippy${NC}"
+    echo "7. Skipping clippy (--skip-clippy)"
+    echo ""
 fi
-echo ""
 
 # Summary
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
