@@ -8,9 +8,7 @@ mod runner;
 pub mod sources;
 
 pub use runner::{FileStorageMode, ImportConfig, ImportRunner};
-pub use sources::{
-    guess_mime_type_from_url, ConcordanceImportSource, MultiPageMode, WarcImportSource,
-};
+pub use sources::{ConcordanceImportSource, MultiPageMode, WarcImportSource};
 
 use std::path::{Path, PathBuf};
 

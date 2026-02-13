@@ -102,12 +102,7 @@ impl DiscoveredUrl {
         }
 
         // Check if URL doesn't end in a file extension (likely a page)
-        if !url_lower.ends_with(".pdf")
-            && !url_lower.ends_with(".doc")
-            && !url_lower.ends_with(".docx")
-            && !url_lower.ends_with(".xls")
-            && !url_lower.ends_with(".xlsx")
-        {
+        if !foiacquire::utils::has_document_extension(&self.url) {
             self.confidence = (self.confidence + 0.05).min(1.0);
         }
 

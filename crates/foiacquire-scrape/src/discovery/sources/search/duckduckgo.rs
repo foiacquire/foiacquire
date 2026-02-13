@@ -135,17 +135,11 @@ impl DuckDuckGoSource {
 
     /// Check if URL looks like a listing page.
     fn is_likely_listing(&self, url: &str) -> bool {
-        let url_lower = url.to_lowercase();
-
-        // Document extensions are not listings
-        if url_lower.ends_with(".pdf")
-            || url_lower.ends_with(".doc")
-            || url_lower.ends_with(".docx")
-            || url_lower.ends_with(".xls")
-            || url_lower.ends_with(".xlsx")
-        {
+        if foiacquire::utils::has_document_extension(url) {
             return false;
         }
+
+        let url_lower = url.to_lowercase();
 
         // Listing patterns
         let listing_patterns = [

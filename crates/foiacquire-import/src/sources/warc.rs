@@ -107,30 +107,6 @@ fn parse_http_response(data: &[u8]) -> Option<(HttpResponseHeaders, &[u8])> {
     ))
 }
 
-/// Guess MIME type from URL extension.
-pub fn guess_mime_type_from_url(url: &str) -> String {
-    let path = url.split('?').next().unwrap_or(url);
-    if path.ends_with(".pdf") || path.ends_with(".PDF") {
-        "application/pdf".to_string()
-    } else if path.ends_with(".html") || path.ends_with(".htm") {
-        "text/html".to_string()
-    } else if path.ends_with(".txt") {
-        "text/plain".to_string()
-    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-        "image/jpeg".to_string()
-    } else if path.ends_with(".png") {
-        "image/png".to_string()
-    } else if path.ends_with(".gif") {
-        "image/gif".to_string()
-    } else if path.ends_with(".doc") {
-        "application/msword".to_string()
-    } else if path.ends_with(".docx") {
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
-    } else {
-        "application/octet-stream".to_string()
-    }
-}
-
 /// WARC archive import source.
 pub struct WarcImportSource {
     /// Path to the WARC file.
@@ -342,7 +318,7 @@ impl WarcImportSource {
             let mime_type = headers
                 .content_type
                 .clone()
-                .unwrap_or_else(|| guess_mime_type_from_url(&target_uri));
+                .unwrap_or_else(|| foiacquire::utils::guess_mime_from_url(&target_uri).to_string());
 
             if config.dry_run {
                 println!(

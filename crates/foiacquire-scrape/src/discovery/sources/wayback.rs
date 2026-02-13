@@ -54,33 +54,13 @@ impl WaybackSource {
         url
     }
 
-    /// Check if a mimetype indicates a document.
-    fn is_document_mimetype(mimetype: &str) -> bool {
-        matches!(
-            mimetype,
-            "application/pdf"
-                | "application/msword"
-                | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                | "application/vnd.ms-excel"
-                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                | "text/html"
-                | "application/xhtml+xml"
-        )
-    }
-
     /// Check if URL looks like a listing page.
     fn is_likely_listing(url: &str) -> bool {
-        let url_lower = url.to_lowercase();
-
-        // URLs ending in document extensions are not listings
-        if url_lower.ends_with(".pdf")
-            || url_lower.ends_with(".doc")
-            || url_lower.ends_with(".docx")
-            || url_lower.ends_with(".xls")
-            || url_lower.ends_with(".xlsx")
-        {
+        if foiacquire::utils::has_document_extension(url) {
             return false;
         }
+
+        let url_lower = url.to_lowercase();
 
         // Listing patterns
         let listing_patterns = [
@@ -194,7 +174,7 @@ impl DiscoverySource for WaybackSource {
                 let mimetype = row.get(1).map(|s| s.as_str()).unwrap_or("");
 
                 // Filter by mimetype if we have it
-                if !mimetype.is_empty() && !Self::is_document_mimetype(mimetype) {
+                if !mimetype.is_empty() && !foiacquire::utils::is_document_mimetype(mimetype) {
                     continue;
                 }
 
@@ -257,18 +237,6 @@ mod tests {
         assert!(url.contains("from=20200101"));
         assert!(url.contains("to=20231231"));
         assert!(!url.contains("limit="));
-    }
-
-    #[test]
-    fn is_document_mimetype_test() {
-        assert!(WaybackSource::is_document_mimetype("application/pdf"));
-        assert!(WaybackSource::is_document_mimetype("text/html"));
-        assert!(WaybackSource::is_document_mimetype("application/msword"));
-
-        assert!(!WaybackSource::is_document_mimetype("image/png"));
-        assert!(!WaybackSource::is_document_mimetype(
-            "application/javascript"
-        ));
     }
 
     #[test]
