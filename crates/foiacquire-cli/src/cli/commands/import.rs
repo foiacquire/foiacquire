@@ -7,9 +7,7 @@ use console::style;
 
 use foiacquire::config::Settings;
 use foiacquire::models::{CrawlUrl, DiscoveryMethod};
-use foiacquire_import::{
-    guess_mime_type_from_url, FileStorageMode, ImportRunner, ImportStats, WarcImportSource,
-};
+use foiacquire_import::{FileStorageMode, ImportRunner, ImportStats, WarcImportSource};
 
 /// Import documents from WARC archive files.
 #[allow(clippy::too_many_arguments)]
@@ -290,7 +288,7 @@ pub async fn cmd_import_stdin(
     let mime_type = content_type
         .map(|s| s.to_string())
         .or_else(|| infer::get(&content).map(|t| t.mime_type().to_string()))
-        .unwrap_or_else(|| guess_mime_type_from_url(url));
+        .unwrap_or_else(|| foiacquire::utils::guess_mime_from_url(url).to_string());
 
     // Extract filename from URL if not specified
     let original_filename = filename.map(|s| s.to_string()).or_else(|| {

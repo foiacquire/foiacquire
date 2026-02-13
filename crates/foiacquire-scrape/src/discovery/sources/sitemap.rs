@@ -194,19 +194,11 @@ impl SitemapSource {
 
     /// Check if a URL looks like a listing page vs a document.
     fn is_likely_listing(&self, url: &str) -> bool {
-        let url_lower = url.to_lowercase();
-
-        // URLs ending in common document extensions are not listings
-        if url_lower.ends_with(".pdf")
-            || url_lower.ends_with(".doc")
-            || url_lower.ends_with(".docx")
-            || url_lower.ends_with(".xls")
-            || url_lower.ends_with(".xlsx")
-            || url_lower.ends_with(".ppt")
-            || url_lower.ends_with(".pptx")
-        {
+        if foiacquire::utils::has_document_extension(url) {
             return false;
         }
+
+        let url_lower = url.to_lowercase();
 
         // URLs with these patterns are likely listings
         let listing_patterns = [
