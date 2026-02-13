@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use std::time::Duration;
 use tracing::debug;
 
+use super::create_discovery_client;
 use crate::cdx::{self, CdxQuery};
 use crate::discovery::url_utils::{dedup_and_limit, extract_domain};
 use crate::discovery::{DiscoveredUrl, DiscoveryError, DiscoverySource, DiscoverySourceConfig};
-use crate::HttpClient;
 use foiacquire::models::DiscoveryMethod;
 
 /// Discovery source using Wayback Machine CDX API.
@@ -77,15 +77,8 @@ impl DiscoverySource for WaybackSource {
 
         debug!("Querying Wayback CDX API: {}", cdx_url);
 
-        let client = HttpClient::builder(
-            "wayback",
-            Duration::from_secs(60),
-            Duration::from_millis(config.rate_limit_ms),
-        )
-        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
-        .privacy(&config.privacy)
-        .build()
-        .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let client =
+            create_discovery_client("wayback", config, Some(Duration::from_secs(60)), None)?;
 
         let text = client
             .get_text(&cdx_url)

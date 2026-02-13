@@ -3,12 +3,11 @@
 //! Enumerates well-known paths that often contain documents on government sites.
 
 use async_trait::async_trait;
-use std::time::Duration;
 use tracing::debug;
 
+use super::create_discovery_client;
 use crate::discovery::url_utils::normalize_base_url;
 use crate::discovery::{DiscoveredUrl, DiscoveryError, DiscoverySource, DiscoverySourceConfig};
-use crate::HttpClient;
 use foiacquire::models::DiscoveryMethod;
 
 /// Common paths found on government document sites.
@@ -106,16 +105,7 @@ impl CommonPathsSource {
     ) -> Option<(String, u16)> {
         let url = format!("{}{}", base_url.trim_end_matches('/'), path);
 
-        // Create HTTP client with privacy configuration
-        let client = match HttpClient::builder(
-            "common_paths",
-            Duration::from_secs(30),
-            Duration::from_millis(config.rate_limit_ms),
-        )
-        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
-        .privacy(&config.privacy)
-        .build()
-        {
+        let client = match create_discovery_client("common_paths", config, None, None) {
             Ok(c) => c,
             Err(_) => return None,
         };
