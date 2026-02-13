@@ -105,13 +105,15 @@ impl CommonPathsSource {
         let url = format!("{}{}", base_url.trim_end_matches('/'), path);
 
         // Create HTTP client with privacy configuration
-        let client = match HttpClient::with_privacy(
+        let client = match HttpClient::builder(
             "common_paths",
             Duration::from_secs(30),
             Duration::from_millis(config.rate_limit_ms),
-            Some("Mozilla/5.0 (compatible; FOIAcquire/1.0)"),
-            &config.privacy,
-        ) {
+        )
+        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
+        .privacy(&config.privacy)
+        .build()
+        {
             Ok(c) => c,
             Err(_) => return None,
         };

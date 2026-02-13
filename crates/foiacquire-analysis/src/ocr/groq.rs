@@ -116,14 +116,10 @@ impl GroqBackend {
 
     /// Create an HTTP client for Groq requests.
     fn create_client(&self) -> Result<HttpClient, OcrError> {
-        HttpClient::with_privacy(
-            "groq-ocr",
-            Duration::from_secs(120),
-            Duration::from_millis(0),
-            None,
-            &self.privacy,
-        )
-        .map_err(|e| OcrError::OcrFailed(format!("Failed to create HTTP client: {}", e)))
+        HttpClient::builder("groq-ocr", Duration::from_secs(120), Duration::from_millis(0))
+            .privacy(&self.privacy)
+            .build()
+            .map_err(|e| OcrError::OcrFailed(format!("Failed to create HTTP client: {}", e)))
     }
 
     /// Run Groq OCR on an image (async implementation with rate limiting).
