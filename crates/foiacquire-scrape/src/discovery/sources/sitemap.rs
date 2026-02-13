@@ -3,12 +3,11 @@
 //! Parses sitemap.xml files and robots.txt to discover URLs.
 
 use async_trait::async_trait;
-use std::time::Duration;
 use tracing::{debug, warn};
 
+use super::create_discovery_client;
 use crate::discovery::url_utils::{dedup_and_limit, extract_xml_locs, normalize_base_url};
 use crate::discovery::{DiscoveredUrl, DiscoveryError, DiscoverySource, DiscoverySourceConfig};
-use crate::HttpClient;
 use foiacquire::models::DiscoveryMethod;
 
 /// Standard sitemap locations to check.
@@ -39,16 +38,7 @@ impl SitemapSource {
         let robots_url = format!("{}/robots.txt", base_url.trim_end_matches('/'));
         debug!("Checking robots.txt at {}", robots_url);
 
-        // Create HTTP client with privacy configuration
-        let client = match HttpClient::builder(
-            "sitemap",
-            Duration::from_secs(30),
-            Duration::from_millis(config.rate_limit_ms),
-        )
-        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
-        .privacy(&config.privacy)
-        .build()
-        {
+        let client = match create_discovery_client("sitemap", config, None, None) {
             Ok(c) => c,
             Err(e) => {
                 debug!("Failed to create HTTP client: {}", e);
@@ -85,16 +75,7 @@ impl SitemapSource {
         url: &str,
         config: &DiscoverySourceConfig,
     ) -> Result<Vec<String>, DiscoveryError> {
-        // Create HTTP client with privacy configuration
-        let client = HttpClient::builder(
-            "sitemap",
-            Duration::from_secs(30),
-            Duration::from_millis(config.rate_limit_ms),
-        )
-        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
-        .privacy(&config.privacy)
-        .build()
-        .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let client = create_discovery_client("sitemap", config, None, None)?;
 
         let mut all_urls = Vec::new();
         let mut pending_sitemaps = vec![url.to_string()];

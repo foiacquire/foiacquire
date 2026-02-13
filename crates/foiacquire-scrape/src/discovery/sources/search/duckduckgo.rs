@@ -4,13 +4,12 @@
 
 use async_trait::async_trait;
 use scraper::{Html, Selector};
-use std::time::Duration;
 use tracing::{debug, warn};
 
 use super::QueryBuilder;
+use crate::discovery::sources::create_discovery_client;
 use crate::discovery::url_utils::extract_domain;
 use crate::discovery::{DiscoveredUrl, DiscoveryError, DiscoverySource, DiscoverySourceConfig};
-use crate::HttpClient;
 use foiacquire::models::DiscoveryMethod;
 
 /// DuckDuckGo search URL.
@@ -34,16 +33,8 @@ impl DuckDuckGoSource {
     ) -> Result<Vec<SearchResult>, DiscoveryError> {
         debug!("DuckDuckGo search: {}", query);
 
-        // Create HTTP client with privacy configuration
-        let client = HttpClient::builder(
-            "duckduckgo",
-            Duration::from_secs(30),
-            Duration::from_millis(config.rate_limit_ms),
-        )
-        .user_agent("impersonate") // Use realistic browser user agent
-        .privacy(&config.privacy)
-        .build()
-        .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let client =
+            create_discovery_client("duckduckgo", config, None, Some("impersonate"))?;
 
         let response = client
             .post(DDG_SEARCH_URL, &[("q", query), ("kl", "us-en")])
