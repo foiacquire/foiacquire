@@ -95,13 +95,14 @@ impl WaybackSource {
 
         let query_url = query.build();
 
-        let client = HttpClient::with_privacy(
+        let client = HttpClient::builder(
             "wayback_archive",
             Duration::from_secs(30),
             Duration::from_millis(500),
-            Some("FOIAcquire/0.7 (archive-research; +https://github.com/monokrome/foiacquire)"),
-            &self.privacy,
         )
+        .user_agent("FOIAcquire/0.7 (archive-research; +https://github.com/monokrome/foiacquire)")
+        .privacy(&self.privacy)
+        .build()
         .map_err(|e| ArchiveError::Parse(format!("Failed to create HTTP client: {}", e)))?;
 
         let body = client.get_text(&query_url).await.map_err(|e| {

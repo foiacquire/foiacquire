@@ -38,13 +38,15 @@ impl SitemapSource {
         debug!("Checking robots.txt at {}", robots_url);
 
         // Create HTTP client with privacy configuration
-        let client = match HttpClient::with_privacy(
+        let client = match HttpClient::builder(
             "sitemap",
             Duration::from_secs(30),
             Duration::from_millis(config.rate_limit_ms),
-            Some("Mozilla/5.0 (compatible; FOIAcquire/1.0)"),
-            &config.privacy,
-        ) {
+        )
+        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
+        .privacy(&config.privacy)
+        .build()
+        {
             Ok(c) => c,
             Err(e) => {
                 debug!("Failed to create HTTP client: {}", e);
@@ -82,13 +84,14 @@ impl SitemapSource {
         config: &DiscoverySourceConfig,
     ) -> Result<Vec<String>, DiscoveryError> {
         // Create HTTP client with privacy configuration
-        let client = HttpClient::with_privacy(
+        let client = HttpClient::builder(
             "sitemap",
             Duration::from_secs(30),
             Duration::from_millis(config.rate_limit_ms),
-            Some("Mozilla/5.0 (compatible; FOIAcquire/1.0)"),
-            &config.privacy,
         )
+        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
+        .privacy(&config.privacy)
+        .build()
         .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         let mut all_urls = Vec::new();

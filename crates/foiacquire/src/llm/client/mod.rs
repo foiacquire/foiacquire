@@ -118,13 +118,13 @@ impl LlmClient {
 
     /// Create an HTTP client for LLM requests.
     fn create_client(&self) -> Result<HttpClient, Box<dyn std::error::Error>> {
-        HttpClient::with_privacy(
+        HttpClient::builder(
             "llm",
             Duration::from_secs(300), // 5 min timeout for slow models
             Duration::from_millis(0), // No rate limiting for LLM
-            None,                     // Use default user agent
-            &self.privacy,
         )
+        .privacy(&self.privacy)
+        .build()
         .map_err(|e| e.into())
     }
 

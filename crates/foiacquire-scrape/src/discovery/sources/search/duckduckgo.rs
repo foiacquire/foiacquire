@@ -33,13 +33,14 @@ impl DuckDuckGoSource {
         debug!("DuckDuckGo search: {}", query);
 
         // Create HTTP client with privacy configuration
-        let client = HttpClient::with_privacy(
+        let client = HttpClient::builder(
             "duckduckgo",
             Duration::from_secs(30),
             Duration::from_millis(config.rate_limit_ms),
-            Some("impersonate"), // Use realistic browser user agent
-            &config.privacy,
         )
+        .user_agent("impersonate") // Use realistic browser user agent
+        .privacy(&config.privacy)
+        .build()
         .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         let response = client

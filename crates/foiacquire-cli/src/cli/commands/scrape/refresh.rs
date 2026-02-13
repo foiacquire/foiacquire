@@ -177,13 +177,14 @@ pub async fn cmd_refresh(
         let via = via_mappings.clone();
 
         let handle = tokio::spawn(async move {
-            let client = match foiacquire::http_client::HttpClient::with_privacy(
+            let client = match foiacquire::http_client::HttpClient::builder(
                 "refresh",
                 std::time::Duration::from_secs(30),
                 std::time::Duration::from_millis(100),
-                None,
-                &privacy,
-            ) {
+            )
+            .privacy(&privacy)
+            .build()
+            {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("Failed to create HTTP client: {}", e);

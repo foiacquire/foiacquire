@@ -92,13 +92,14 @@ impl DiscoverySource for WaybackSource {
 
         debug!("Querying Wayback CDX API: {}", cdx_url);
 
-        let client = HttpClient::with_privacy(
+        let client = HttpClient::builder(
             "wayback",
             Duration::from_secs(60),
             Duration::from_millis(config.rate_limit_ms),
-            Some("Mozilla/5.0 (compatible; FOIAcquire/1.0)"),
-            &config.privacy,
         )
+        .user_agent("Mozilla/5.0 (compatible; FOIAcquire/1.0)")
+        .privacy(&config.privacy)
+        .build()
         .map_err(|e| DiscoveryError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         let text = client
