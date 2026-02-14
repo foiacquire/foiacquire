@@ -2,9 +2,10 @@
 
 use console::style;
 
-use foiacquire::config::Settings;
+use foiacquire::config::{Settings, SourcesConfig};
 use foiacquire::repository::migrations;
 use foiacquire::repository::util::redact_url_password;
+use foiacquire::repository::Repositories;
 
 /// Expected schema version (should match storage_meta.format_version).
 const EXPECTED_SCHEMA_VERSION: &str = "15";
@@ -83,5 +84,102 @@ pub async fn cmd_migrate(settings: &Settings, check: bool, force: bool) -> anyho
         println!("  Schema version is now: {}", new_version);
     }
 
+    // Post-migration: seed scraper_configs from configuration_history
+    migrate_config_history_to_scraper_configs(&repos).await;
+
     Ok(())
+}
+
+/// Migrate data from configuration_history into scraper_configs.
+///
+/// If scraper_configs is empty and configuration_history has data,
+/// extract each entry from the scrapers HashMap and insert into
+/// scraper_configs. Merges global-level fields (user_agent, request_timeout,
+/// request_delay_ms, via, via_mode) into each source's ScraperConfig as
+/// fallback values.
+async fn migrate_config_history_to_scraper_configs(repos: &Repositories) {
+    // Only migrate if scraper_configs is empty
+    let is_empty = match repos.scraper_configs.is_empty().await {
+        Ok(empty) => empty,
+        Err(e) => {
+            tracing::warn!("Failed to check scraper_configs: {}", e);
+            return;
+        }
+    };
+    if !is_empty {
+        return;
+    }
+
+    // Load latest config from configuration_history
+    let entry = match repos.config_history.get_latest().await {
+        Ok(Some(e)) => e,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!("Failed to read configuration_history: {}", e);
+            return;
+        }
+    };
+
+    // Try to parse as SourcesConfig first, then full Config
+    let sources_config: Option<SourcesConfig> =
+        serde_json::from_str(&entry.data).ok();
+
+    let (scrapers, global_user_agent, global_timeout, global_delay, global_via, global_via_mode) =
+        match sources_config {
+            Some(sc) => (
+                sc.scrapers,
+                sc.user_agent,
+                sc.request_timeout,
+                sc.request_delay_ms,
+                sc.via,
+                sc.via_mode,
+            ),
+            None => return,
+        };
+
+    if scrapers.is_empty() {
+        return;
+    }
+
+    let mut migrated = 0usize;
+    for (source_id, mut config) in scrapers {
+        // Merge global fields as fallbacks into per-source config
+        if config.user_agent.is_none() {
+            config.user_agent = global_user_agent.clone();
+        }
+        if config.request_timeout.is_none() {
+            config.request_timeout = global_timeout;
+        }
+        if config.request_delay_ms.is_none() {
+            config.request_delay_ms = global_delay;
+        }
+        if config.via.is_empty() && !global_via.is_empty() {
+            config.via = global_via.clone();
+        }
+        if config.via_mode.is_none() {
+            let default_via_mode = foiacquire::config::ViaMode::default();
+            if global_via_mode != default_via_mode {
+                config.via_mode = Some(global_via_mode);
+            }
+        }
+
+        match repos.scraper_configs.upsert(&source_id, &config).await {
+            Ok(()) => migrated += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to migrate scraper config for '{}': {}",
+                    source_id,
+                    e
+                );
+            }
+        }
+    }
+
+    if migrated > 0 {
+        println!(
+            "{} Migrated {} scraper configs from configuration_history",
+            style("→").cyan(),
+            migrated
+        );
+    }
 }
