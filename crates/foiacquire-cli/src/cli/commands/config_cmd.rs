@@ -32,10 +32,7 @@ pub async fn cmd_config_transfer(settings: &Settings, file: Option<&Path>) -> an
         .unwrap_or_else(|| "auto-discovered".to_string());
 
     if config.scrapers.is_empty() {
-        eprintln!(
-            "{} No scrapers found in config file",
-            style("!").yellow()
-        );
+        eprintln!("{} No scrapers found in config file", style("!").yellow());
         return Ok(());
     }
 
@@ -43,11 +40,18 @@ pub async fn cmd_config_transfer(settings: &Settings, file: Option<&Path>) -> an
     let repos = settings.repositories()?;
     let mut transferred = 0usize;
     for (source_id, scraper_config) in &config.scrapers {
-        repos.scraper_configs.upsert(source_id, scraper_config).await?;
+        repos
+            .scraper_configs
+            .upsert(source_id, scraper_config)
+            .await?;
         transferred += 1;
     }
 
-    eprintln!("{} Transferred {} scraper configs to database", success(), transferred);
+    eprintln!(
+        "{} Transferred {} scraper configs to database",
+        success(),
+        transferred
+    );
     eprintln!("  {} Source: {}", style("→").dim(), source_path);
 
     Ok(())
@@ -65,16 +69,12 @@ pub async fn cmd_config_get(settings: &Settings, setting: &str) -> anyhow::Resul
         None => (setting, None),
     };
 
-    let config = repos
-        .scraper_configs
-        .get(source_id)
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No scraper config found for '{}'. Run 'config transfer' first.",
-                source_id
-            )
-        })?;
+    let config = repos.scraper_configs.get(source_id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No scraper config found for '{}'. Run 'config transfer' first.",
+            source_id
+        )
+    })?;
 
     let value = serde_json::to_value(&config)?;
 
@@ -99,9 +99,9 @@ pub async fn cmd_config_set(settings: &Settings, setting: &str, value: &str) -> 
     let repos = settings.repositories()?;
 
     // Parse source_id and sub-path
-    let (source_id, sub_path) = setting
-        .split_once('.')
-        .ok_or_else(|| anyhow::anyhow!("Setting must be <source_id>.<path> (e.g., my-source.fetch.use_browser)"))?;
+    let (source_id, sub_path) = setting.split_once('.').ok_or_else(|| {
+        anyhow::anyhow!("Setting must be <source_id>.<path> (e.g., my-source.fetch.use_browser)")
+    })?;
 
     // Load existing config or start with empty
     let existing = repos.scraper_configs.get(source_id).await?;

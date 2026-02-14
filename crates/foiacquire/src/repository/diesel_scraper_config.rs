@@ -46,9 +46,7 @@ impl DieselScraperConfigRepository {
     }
 
     /// Get all scraper configs as (source_id, config) pairs.
-    pub async fn get_all(
-        &self,
-    ) -> Result<Vec<(String, ScraperConfig)>, DieselError> {
+    pub async fn get_all(&self) -> Result<Vec<(String, ScraperConfig)>, DieselError> {
         let records: Vec<ScraperConfigRecord> = with_conn!(self.pool, conn, {
             scraper_configs::table
                 .load::<ScraperConfigRecord>(&mut conn)
@@ -75,11 +73,7 @@ impl DieselScraperConfigRepository {
     }
 
     /// Upsert a scraper config for a source.
-    pub async fn upsert(
-        &self,
-        source_id: &str,
-        config: &ScraperConfig,
-    ) -> Result<(), DieselError> {
+    pub async fn upsert(&self, source_id: &str, config: &ScraperConfig) -> Result<(), DieselError> {
         let config_json = serde_json::to_string(config)
             .map_err(|e| DieselError::SerializationError(Box::new(e)))?;
         let now = Utc::now().to_rfc3339();

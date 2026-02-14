@@ -121,8 +121,7 @@ async fn migrate_config_history_to_scraper_configs(repos: &Repositories) {
     };
 
     // Try to parse as SourcesConfig first, then full Config
-    let sources_config: Option<SourcesConfig> =
-        serde_json::from_str(&entry.data).ok();
+    let sources_config: Option<SourcesConfig> = serde_json::from_str(&entry.data).ok();
 
     let (scrapers, global_user_agent, global_timeout, global_delay, global_via, global_via_mode) =
         match sources_config {

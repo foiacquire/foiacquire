@@ -341,7 +341,6 @@ impl Config {
 
         serde_json::to_string_pretty(&config).unwrap_or_default()
     }
-
 }
 
 #[cfg(test)]

@@ -115,8 +115,7 @@ impl ConfigWatcher {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
             // Detect changes via scraper_configs MAX(updated_at)
-            let changed = if let Ok(Some(max_updated)) =
-                self.scraper_configs.max_updated_at().await
+            let changed = if let Ok(Some(max_updated)) = self.scraper_configs.max_updated_at().await
             {
                 max_updated != self.current_hash
             } else {

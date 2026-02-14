@@ -36,7 +36,10 @@ pub async fn cmd_init(settings: &Settings) -> anyhow::Result<()> {
         }
 
         // Store scraper config in scraper_configs table
-        repos.scraper_configs.upsert(source_id, scraper_config).await?;
+        repos
+            .scraper_configs
+            .upsert(source_id, scraper_config)
+            .await?;
     }
 
     if sources_added == 0 && config.scrapers.is_empty() {

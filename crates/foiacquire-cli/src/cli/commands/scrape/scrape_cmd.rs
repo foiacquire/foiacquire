@@ -95,15 +95,26 @@ pub async fn cmd_scrape(
     // Initial config load for source list
     let config = Config::load().await;
 
-    let mut config_watcher =
-        ConfigWatcher::new(daemon, reload, config_history, scraper_config_repo.clone(), config.hash())
-            .await;
+    let mut config_watcher = ConfigWatcher::new(
+        daemon,
+        reload,
+        config_history,
+        scraper_config_repo.clone(),
+        config.hash(),
+    )
+    .await;
 
     // Determine initial sources to scrape
     let mut sources_to_scrape: Vec<String> = if all {
-        scraper_config_repo.list_source_ids().await.unwrap_or_default()
+        scraper_config_repo
+            .list_source_ids()
+            .await
+            .unwrap_or_default()
     } else if source_ids.is_empty() {
-        let available = scraper_config_repo.list_source_ids().await.unwrap_or_default();
+        let available = scraper_config_repo
+            .list_source_ids()
+            .await
+            .unwrap_or_default();
         println!(
             "{} No sources specified. Use --all or provide source IDs.",
             style("✗").red()
@@ -126,7 +137,10 @@ pub async fn cmd_scrape(
     loop {
         // For next-run and inplace modes, reload source list from DB
         if daemon && all && matches!(reload, ReloadMode::NextRun | ReloadMode::Inplace) {
-            let new_sources = scraper_config_repo.list_source_ids().await.unwrap_or_default();
+            let new_sources = scraper_config_repo
+                .list_source_ids()
+                .await
+                .unwrap_or_default();
             if new_sources != sources_to_scrape {
                 println!(
                     "{} Config reloaded ({} sources)",
