@@ -3,9 +3,9 @@
 use std::sync::Arc;
 use tracing::debug;
 
-use super::ConfigurableScraper;
 #[cfg(feature = "browser")]
 use super::fetch::FetchError;
+use super::ConfigurableScraper;
 use crate::{ScrapeStream, ScraperResult};
 #[cfg(feature = "browser")]
 use foiacquire::browser::BrowserFetcher;
@@ -191,10 +191,7 @@ impl ConfigurableScraper {
                         match browser_result {
                             Ok(result) => Some(result),
                             Err(FetchError::BrowserUnavailable(msg)) => {
-                                tracing::error!(
-                                    "Browser unavailable, stopping worker: {}",
-                                    msg
-                                );
+                                tracing::error!("Browser unavailable, stopping worker: {}", msg);
                                 // Don't mark URL as failed — it's infrastructure, not the URL
                                 break;
                             }
