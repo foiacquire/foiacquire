@@ -240,6 +240,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    scraper_configs (source_id) {
+        source_id -> Text,
+        config -> Text,
+        created_at -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
     virtual_files (id) {
         id -> Text,
         document_id -> Text,
@@ -285,6 +294,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     documents,
     page_ocr_results,
     rate_limit_state,
+    scraper_configs,
     service_status,
     sources,
     virtual_files,

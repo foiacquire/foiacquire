@@ -365,6 +365,31 @@ pub struct NewVirtualFile<'a> {
 }
 
 // =============================================================================
+// Scraper Configs
+// =============================================================================
+
+/// Scraper config record from the database.
+#[derive(Queryable, Selectable, Identifiable, Debug, Clone)]
+#[diesel(table_name = schema::scraper_configs)]
+#[diesel(primary_key(source_id))]
+pub struct ScraperConfigRecord {
+    pub source_id: String,
+    pub config: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// New scraper config for insertion.
+#[derive(Insertable, Debug)]
+#[diesel(table_name = schema::scraper_configs)]
+pub struct NewScraperConfig<'a> {
+    pub source_id: &'a str,
+    pub config: &'a str,
+    pub created_at: &'a str,
+    pub updated_at: &'a str,
+}
+
+// =============================================================================
 // Configuration History
 // =============================================================================
 

@@ -16,6 +16,7 @@ pub mod source;
 pub mod diesel_config_history;
 pub mod diesel_crawl;
 pub mod diesel_document;
+pub mod diesel_scraper_config;
 
 // Keep these until fully migrated
 pub mod diesel_context;
@@ -54,6 +55,7 @@ pub use diesel_crawl::DieselCrawlRepository;
 pub use diesel_document::DieselDocumentRepository;
 #[allow(unused_imports)]
 pub use diesel_service_status::DieselServiceStatusRepository;
+pub use diesel_scraper_config::DieselScraperConfigRepository;
 pub use diesel_source::DieselSourceRepository;
 pub use migration::{DatabaseExporter, DatabaseImporter};
 pub use migration_sqlite::SqliteMigrator;
@@ -67,8 +69,9 @@ pub use document::{extract_filename_parts, sanitize_filename};
 pub use models::{
     ConfigHistoryRecord, CrawlConfigRecord, CrawlRequestRecord, CrawlUrlRecord, DocumentPageRecord,
     DocumentRecord, DocumentVersionRecord, NewConfigHistory, NewCrawlRequest, NewCrawlUrl,
-    NewDocument, NewDocumentPage, NewDocumentVersion, NewRateLimitState, NewSource, NewVirtualFile,
-    RateLimitStateRecord, SourceRecord, VirtualFileRecord,
+    NewDocument, NewDocumentPage, NewDocumentVersion, NewRateLimitState, NewScraperConfig,
+    NewSource, NewVirtualFile, RateLimitStateRecord, ScraperConfigRecord, SourceRecord,
+    VirtualFileRecord,
 };
 
 use chrono::{DateTime, Utc};
@@ -84,6 +87,7 @@ pub struct Repositories {
     pub crawl: DieselCrawlRepository,
     pub documents: DieselDocumentRepository,
     pub config_history: DieselConfigHistoryRepository,
+    pub scraper_configs: DieselScraperConfigRepository,
     pub service_status: DieselServiceStatusRepository,
     pool: DbPool,
 }
@@ -95,6 +99,7 @@ impl Repositories {
             crawl: ctx.crawl(),
             documents: ctx.documents(),
             config_history: ctx.config_history(),
+            scraper_configs: ctx.scraper_configs(),
             service_status: ctx.service_status(),
             pool: ctx.pool().clone(),
         }

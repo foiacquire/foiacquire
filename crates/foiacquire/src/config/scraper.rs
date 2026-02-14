@@ -7,6 +7,8 @@
 //! Moved from `scrapers/config.rs` to break circular dependencies
 //! for workspace split (config is in core, scrapers is a domain crate).
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::browser::BrowserEngineConfig;
@@ -93,6 +95,19 @@ pub struct ScraperConfig {
     #[serde(default, skip_serializing_if = "SourcePrivacyConfig::is_default")]
     #[prefer(default)]
     pub privacy: SourcePrivacyConfig,
+    /// Per-source request timeout in seconds (overrides global setting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout: Option<u64>,
+    /// Per-source request delay in milliseconds (overrides global setting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_delay_ms: Option<u64>,
+    /// Per-source URL rewriting for caching proxies (overrides global setting).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[prefer(default)]
+    pub via: HashMap<String, String>,
+    /// Per-source via proxy mode (overrides global setting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_mode: Option<ViaMode>,
 }
 
 impl ScraperConfig {

@@ -8,6 +8,7 @@ use std::path::Path;
 use super::diesel_config_history::DieselConfigHistoryRepository;
 use super::diesel_crawl::DieselCrawlRepository;
 use super::diesel_document::DieselDocumentRepository;
+use super::diesel_scraper_config::DieselScraperConfigRepository;
 use super::diesel_service_status::DieselServiceStatusRepository;
 use super::diesel_source::DieselSourceRepository;
 use super::pool::{DbPool, DieselError};
@@ -90,6 +91,11 @@ impl DieselDbContext {
     /// Get a config history repository.
     pub fn config_history(&self) -> DieselConfigHistoryRepository {
         DieselConfigHistoryRepository::new(self.pool.clone())
+    }
+
+    /// Get a scraper config repository.
+    pub fn scraper_configs(&self) -> DieselScraperConfigRepository {
+        DieselScraperConfigRepository::new(self.pool.clone())
     }
 
     /// Get a service status repository.
