@@ -92,35 +92,28 @@ pub async fn cmd_scrape(
     let config_history = repos.config_history;
     let scraper_configs = repos.scraper_configs;
 
-    // Initial config load for source list
+    // Initial config load — file config hash used only as fallback for daemon detection
     let config = Config::load().await;
 
     let mut config_watcher = ConfigWatcher::new(
         daemon,
         reload,
         config_history,
-        scraper_configs,
+        scraper_configs.clone(),
         config.hash(),
     )
     .await;
 
-    // Determine initial sources to scrape
+    // Determine initial sources to scrape from scraper_configs table
     let mut sources_to_scrape: Vec<String> = if all {
-        config.scrapers.keys().cloned().collect()
+        scraper_configs.list_source_ids().await?
     } else if source_ids.is_empty() {
+        let available = scraper_configs.list_source_ids().await?;
         println!(
             "{} No sources specified. Use --all or provide source IDs.",
             style("✗").red()
         );
-        println!(
-            "Available sources: {}",
-            config
-                .scrapers
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("Available sources: {}", available.join(", "));
         return Ok(());
     } else {
         source_ids.to_vec()
@@ -136,17 +129,17 @@ pub async fn cmd_scrape(
     }
 
     loop {
-        // For next-run and inplace modes, reload config to get updated source list
+        // For next-run and inplace modes, reload source list from DB
         if daemon && all && matches!(reload, ReloadMode::NextRun | ReloadMode::Inplace) {
-            let new_config = Config::load().await;
-            let new_sources: Vec<String> = new_config.scrapers.keys().cloned().collect();
-            if new_sources != sources_to_scrape {
-                println!(
-                    "{} Config reloaded ({} sources)",
-                    style("↻").cyan(),
-                    new_sources.len()
-                );
-                sources_to_scrape = new_sources;
+            if let Ok(new_sources) = scraper_configs.list_source_ids().await {
+                if new_sources != sources_to_scrape {
+                    println!(
+                        "{} Config reloaded ({} sources)",
+                        style("↻").cyan(),
+                        new_sources.len()
+                    );
+                    sources_to_scrape = new_sources;
+                }
             }
         }
         // Initialize TUI with fixed status pane at top (1 header + 1 line per source)

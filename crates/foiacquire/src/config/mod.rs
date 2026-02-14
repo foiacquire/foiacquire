@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::llm::LlmConfig;
-use crate::prefer_db::FoiaConfigLoader;
 use crate::privacy::PrivacyConfig;
 use crate::repository::util::validate_database_url;
 
@@ -312,43 +311,6 @@ impl Config {
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         hex::encode(hasher.finalize())
-    }
-
-    /// Extract source interaction settings for database storage.
-    /// Excludes device-specific and bootstrap settings that shouldn't be synced.
-    pub fn to_sources_config(&self) -> SourcesConfig {
-        SourcesConfig {
-            user_agent: self.user_agent.clone(),
-            request_timeout: self.request_timeout,
-            request_delay_ms: self.request_delay_ms,
-            default_refresh_ttl_days: self.default_refresh_ttl_days,
-            scrapers: self.scrapers.clone(),
-            via: self.via.clone(),
-            via_mode: self.via_mode,
-        }
-    }
-
-    /// Apply source interaction settings from database.
-    pub fn apply_sources_config(&mut self, sources: SourcesConfig) {
-        self.user_agent = sources.user_agent;
-        self.request_timeout = sources.request_timeout;
-        self.request_delay_ms = sources.request_delay_ms;
-        self.default_refresh_ttl_days = sources.default_refresh_ttl_days;
-        self.scrapers = sources.scrapers;
-        self.via = sources.via;
-        self.via_mode = sources.via_mode;
-    }
-
-    /// Load configuration from the scraper_configs table.
-    /// Loads app-level settings only and merges with default config.
-    /// Device-specific and bootstrap settings are not stored in DB.
-    pub async fn load_from_db(db_path: &Path) -> Option<Self> {
-        let loader = FoiaConfigLoader::new(db_path);
-        let snapshot = loader.load_snapshot().await?;
-
-        let mut config = Config::default();
-        config.apply_sources_config(snapshot);
-        Some(config)
     }
 
     /// Serialize config to JSON with paths converted to relative.

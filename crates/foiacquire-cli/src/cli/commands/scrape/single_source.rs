@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use console::style;
 
-use foiacquire::config::{Config, Settings};
+use foiacquire::config::{Config, Settings, DEFAULT_REFRESH_TTL_DAYS};
 use foiacquire::llm::LlmClient;
 use foiacquire::models::{ScraperStats, ServiceStatus, Source, SourceType};
 use foiacquire::privacy::PrivacyConfig;
@@ -43,10 +43,10 @@ pub(super) async fn cmd_scrape_single_tui(
         }
     };
 
-    // Load scraper config
-    let config = Config::load().await;
-    let mut scraper_config = match config.scrapers.get(source_id) {
-        Some(c) => c.clone(),
+    // Load scraper config from database (server config)
+    let repos = settings.repositories()?;
+    let mut scraper_config = match repos.scraper_configs.get(source_id).await? {
+        Some(c) => c,
         None => {
             log_msg(&format!(
                 "{} No scraper configured for '{}'",
@@ -56,7 +56,9 @@ pub(super) async fn cmd_scrape_single_tui(
             return Ok(());
         }
     };
-    let repos = settings.repositories()?;
+
+    // Load file config for device-specific settings (LLM, privacy, etc.)
+    let config = Config::load().await;
 
     update_status(&format!("{} loading config...", source_id));
 
@@ -178,7 +180,10 @@ pub(super) async fn cmd_scrape_single_tui(
     }
 
     // Create scraper and start streaming
-    let refresh_ttl_days = config.get_refresh_ttl_days(source_id);
+    let refresh_ttl_days = scraper_config
+        .refresh_ttl_days
+        .or(config.default_refresh_ttl_days)
+        .unwrap_or(DEFAULT_REFRESH_TTL_DAYS);
     // Clone rate limiter - RateLimiter uses Arc internally so cloning shares state
     let limiter_opt = rate_limiter.as_ref().map(|r| (**r).clone());
     let scraper = ConfigurableScraper::with_rate_limiter_and_privacy(
@@ -192,9 +197,10 @@ pub(super) async fn cmd_scrape_single_tui(
     )
     .map_err(|e| anyhow::anyhow!("Failed to create scraper: {}", e))?;
 
-    // Apply via mappings for caching proxy support if configured
-    let scraper = if !config.via.is_empty() {
-        scraper.with_via_config(config.via.clone(), config.via_mode)
+    // Apply per-source via mappings for caching proxy support if configured
+    let scraper = if !scraper_config.via.is_empty() {
+        let via_mode = scraper_config.via_mode.unwrap_or_default();
+        scraper.with_via_config(scraper_config.via.clone(), via_mode)
     } else {
         scraper
     };

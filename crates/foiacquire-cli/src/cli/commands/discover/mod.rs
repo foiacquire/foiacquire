@@ -21,20 +21,18 @@ pub use sources::{cmd_discover_paths, cmd_discover_sitemap, cmd_discover_wayback
 
 /// Helper to get base URL for a source from config.
 pub(super) async fn get_source_base_url(
-    _settings: &Settings,
+    settings: &Settings,
     source_id: &str,
 ) -> anyhow::Result<String> {
-    use foiacquire::config::Config;
-
-    let config = Config::load().await;
-    let scraper = config
-        .scrapers
+    let repos = settings.repositories()?;
+    let scraper = repos
+        .scraper_configs
         .get(source_id)
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Source '{}' not found in configuration", source_id))?;
 
     scraper
         .base_url
-        .clone()
         .ok_or_else(|| anyhow::anyhow!("Source '{}' has no base_url configured", source_id))
 }
 
