@@ -106,7 +106,7 @@ impl PaddleBackend {
         }
 
         ensure_models_present(
-            self.config.model_path.as_ref(),
+            self.config.ocr.model_path.as_ref(),
             &MODEL_CONFIG,
             &[&DET_MODEL, &REC_MODEL, &CLS_MODEL],
         )
