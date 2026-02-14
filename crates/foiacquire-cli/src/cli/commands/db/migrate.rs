@@ -110,31 +110,37 @@ async fn migrate_config_history_to_scraper_configs(repos: &Repositories) {
         return;
     }
 
-    // Load latest config from configuration_history
-    let entry = match repos.config_history.get_latest().await {
-        Ok(Some(e)) => e,
-        Ok(None) => return,
+    // Load all config history entries (newest first) and find the first
+    // one that actually contains scraper configurations. Many entries may
+    // be empty `{}` blobs that parse as SourcesConfig with no scrapers.
+    let entries = match repos.config_history.get_all().await {
+        Ok(e) => e,
         Err(e) => {
             tracing::warn!("Failed to read configuration_history: {}", e);
             return;
         }
     };
 
-    // Try to parse as SourcesConfig first, then full Config
-    let sources_config: Option<SourcesConfig> = serde_json::from_str(&entry.data).ok();
+    let mut scrapers = std::collections::HashMap::new();
+    let mut global_user_agent = None;
+    let mut global_timeout = None;
+    let mut global_delay = None;
+    let mut global_via = std::collections::HashMap::new();
+    let mut global_via_mode = foiacquire::config::ViaMode::default();
 
-    let (scrapers, global_user_agent, global_timeout, global_delay, global_via, global_via_mode) =
-        match sources_config {
-            Some(sc) => (
-                sc.scrapers,
-                sc.user_agent,
-                sc.request_timeout,
-                sc.request_delay_ms,
-                sc.via,
-                sc.via_mode,
-            ),
-            None => return,
-        };
+    for entry in &entries {
+        if let Ok(sc) = serde_json::from_str::<SourcesConfig>(&entry.data) {
+            if !sc.scrapers.is_empty() {
+                scrapers = sc.scrapers;
+                global_user_agent = sc.user_agent;
+                global_timeout = sc.request_timeout;
+                global_delay = sc.request_delay_ms;
+                global_via = sc.via;
+                global_via_mode = sc.via_mode;
+                break;
+            }
+        }
+    }
 
     if scrapers.is_empty() {
         return;
