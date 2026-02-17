@@ -137,6 +137,9 @@ impl AnalysisService {
         let pending_finalized = self.doc_repo.finalize_pending_documents().await?;
         tracing::debug!("Finalized {} pending documents", pending_finalized);
 
+        // Migrate legacy file_path values to deterministic paths
+        self.migrate_legacy_file_paths().await;
+
         // Only run OCR phases if OCR methods are requested
         if has_ocr_methods {
             // ==================== PHASE 0: MIME Detection ====================
@@ -179,6 +182,81 @@ impl AnalysisService {
         // No separate Phase 3 needed.
 
         Ok(result)
+    }
+
+    /// Migrate legacy file_path values to deterministic paths.
+    ///
+    /// Versions with an explicit `file_path` that resolves to the same location
+    /// as the deterministic `compute_storage_path` don't need the stored path.
+    /// Clear them in batches so `resolve_path` uses the computed path instead.
+    async fn migrate_legacy_file_paths(&self) {
+        // Count how many versions have legacy file_path
+        let total = match self.doc_repo.count_legacy_file_paths().await {
+            Ok(n) => n,
+            Err(_) => return,
+        };
+
+        if total == 0 {
+            return;
+        }
+
+        tracing::info!("Checking path resolution for {total} files...");
+
+        const BATCH_SIZE: usize = 1000;
+        let mut cursor: i64 = 0;
+        let mut cleared: u64 = 0;
+        let mut checked: u64 = 0;
+
+        loop {
+            let batch = match self
+                .doc_repo
+                .get_legacy_file_path_versions(cursor, BATCH_SIZE)
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!("Failed to query legacy file_path versions: {e}");
+                    break;
+                }
+            };
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let mut to_clear: Vec<i32> = Vec::new();
+
+            for (version, source_url, title) in &batch {
+                cursor = version.id as i64;
+                checked += 1;
+
+                let stored = version.resolve_path(&self.documents_dir, source_url, title);
+                let computed = self
+                    .documents_dir
+                    .join(version.compute_storage_path(source_url, title));
+
+                if stored == computed {
+                    to_clear.push(version.id as i32);
+                }
+            }
+
+            if !to_clear.is_empty() {
+                match self
+                    .doc_repo
+                    .clear_version_file_paths_batch(&to_clear)
+                    .await
+                {
+                    Ok(n) => cleared += n as u64,
+                    Err(e) => tracing::warn!("Failed to clear legacy file_paths: {e}"),
+                }
+            }
+
+            if batch.len() < BATCH_SIZE {
+                break;
+            }
+        }
+
+        tracing::info!("Done: {checked} checked, {cleared} updated");
     }
 
     /// Phase 0: Detect and fix MIME types based on file content.

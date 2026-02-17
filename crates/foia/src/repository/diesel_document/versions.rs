@@ -259,6 +259,69 @@ impl DieselDocumentRepository {
         })
     }
 
+    /// Count versions with non-null file_path.
+    pub async fn count_legacy_file_paths(&self) -> Result<u64, DieselError> {
+        use diesel::dsl::count_star;
+        with_conn!(self.pool, conn, {
+            let n: i64 = document_versions::table
+                .filter(document_versions::file_path.is_not_null())
+                .select(count_star())
+                .first(&mut conn)
+                .await?;
+            Ok(n as u64)
+        })
+    }
+
+    /// Clear file_path for multiple versions at once.
+    pub async fn clear_version_file_paths_batch(
+        &self,
+        version_ids: &[i32],
+    ) -> Result<usize, DieselError> {
+        if version_ids.is_empty() {
+            return Ok(0);
+        }
+        with_conn!(self.pool, conn, {
+            diesel::update(
+                document_versions::table.filter(document_versions::id.eq_any(version_ids)),
+            )
+            .set(document_versions::file_path.eq(None::<String>))
+            .execute(&mut conn)
+            .await
+        })
+    }
+
+    /// Get versions with non-null file_path for legacy migration.
+    /// Returns (version_id, document_id, file_path, source_url, title, version) tuples
+    /// in batches using cursor pagination on version id.
+    pub async fn get_legacy_file_path_versions(
+        &self,
+        after_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(DocumentVersion, String, String)>, DieselError> {
+        use crate::schema::documents;
+
+        let records: Vec<(DocumentVersionRecord, String, String)> = with_conn!(self.pool, conn, {
+            document_versions::table
+                .inner_join(documents::table)
+                .filter(document_versions::file_path.is_not_null())
+                .filter(document_versions::id.gt(after_id as i32))
+                .order(document_versions::id.asc())
+                .limit(limit as i64)
+                .select((
+                    DocumentVersionRecord::as_select(),
+                    documents::source_url,
+                    documents::title,
+                ))
+                .load(&mut conn)
+                .await
+        })?;
+
+        Ok(records
+            .into_iter()
+            .map(|(rec, url, title)| (Self::version_record_to_model(rec), url, title))
+            .collect())
+    }
+
     /// Get all content hashes for duplicate detection.
     /// Returns (doc_id, source_id, content_hash, title) tuples
     pub async fn get_content_hashes(
