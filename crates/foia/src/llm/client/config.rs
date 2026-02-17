@@ -265,7 +265,7 @@ impl LlmDeviceConfig {
             // Set default model for provider if not explicitly provided
             if explicit_model.is_none() {
                 match provider_lower.as_str() {
-                    "groq" => config.model = "llama-3.1-70b-versatile".to_string(),
+                    "groq" => config.model = "llama-3.3-70b-versatile".to_string(),
                     "openai" => config.model = "gpt-4o-mini".to_string(),
                     "together" => {
                         config.model = "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".to_string()
@@ -283,7 +283,7 @@ impl LlmDeviceConfig {
                         config.endpoint = "https://api.groq.com/openai".to_string();
                     }
                     if config.model == default_model() {
-                        config.model = "llama-3.1-70b-versatile".to_string();
+                        config.model = "llama-3.3-70b-versatile".to_string();
                     }
                 } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
                     config.api_key = Some(key);
