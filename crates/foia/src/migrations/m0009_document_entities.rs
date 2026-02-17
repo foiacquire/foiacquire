@@ -76,7 +76,7 @@ IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'postgis') THEN
     CREATE INDEX IF NOT EXISTS idx_regions_name ON regions (lower(name));
     CREATE INDEX IF NOT EXISTS idx_document_entities_spatial
         ON document_entities USING GIST (
-            ST_MakePoint(longitude, latitude)::geography
+            (ST_MakePoint(longitude, latitude)::geography)
         ) WHERE latitude IS NOT NULL;
 END IF;
 END $$"#,
