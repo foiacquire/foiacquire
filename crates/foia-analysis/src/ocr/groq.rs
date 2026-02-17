@@ -7,8 +7,9 @@
 //! - 1,000 requests per day
 //! - Vision models: Llama 4 Scout (17B), Llama 4 Maverick (17B)
 //!
-//! Rate limiting:
-//! - Set GROQ_DELAY_MS to configure delay between requests (default: 200ms)
+//! Configuration:
+//! - GROQ_VISION_MODEL: model ID (default: meta-llama/llama-4-scout-17b-16e-instruct)
+//! - GROQ_DELAY_MS: delay between requests in ms (default: 200)
 //! - Automatically retries on 429 with exponential backoff
 //! - Respects Retry-After header from API
 
@@ -20,6 +21,12 @@ use std::path::Path;
 
 use super::api_backend;
 use super::backend::{BackendConfig, OcrBackend, OcrBackendType, OcrConfig, OcrError};
+
+const DEFAULT_MODEL: &str = "meta-llama/llama-4-scout-17b-16e-instruct";
+
+fn resolve_model() -> String {
+    std::env::var("GROQ_VISION_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string())
+}
 
 /// Groq Vision OCR backend using OpenAI-compatible API.
 pub struct GroqBackend {
@@ -83,7 +90,7 @@ impl GroqBackend {
         Self {
             config: BackendConfig::new(),
             api_key: std::env::var("GROQ_API_KEY").ok(),
-            model: "llama-4-scout-17b-16e-instruct".to_string(),
+            model: resolve_model(),
         }
     }
 
@@ -92,7 +99,7 @@ impl GroqBackend {
         Self {
             config: BackendConfig::with_config(config),
             api_key: std::env::var("GROQ_API_KEY").ok(),
-            model: "llama-4-scout-17b-16e-instruct".to_string(),
+            model: resolve_model(),
         }
     }
 
@@ -101,7 +108,7 @@ impl GroqBackend {
         Self {
             config,
             api_key: std::env::var("GROQ_API_KEY").ok(),
-            model: "llama-4-scout-17b-16e-instruct".to_string(),
+            model: resolve_model(),
         }
     }
 
@@ -111,7 +118,7 @@ impl GroqBackend {
         self
     }
 
-    /// Set the model (e.g., "llama-4-scout-17b-16e-instruct", "llama-4-maverick-17b-128e-instruct").
+    /// Set the model (e.g., "meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct").
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
