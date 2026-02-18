@@ -60,9 +60,19 @@ pub async fn serve_file(
         }
     };
 
-    let mime = mime_guess::from_path(&canonical_file)
+    let mut mime = mime_guess::from_path(&canonical_file)
         .first_or_octet_stream()
         .to_string();
+
+    // Serve HTML/SVG/XML as plain text to prevent stored XSS from scraped content
+    if mime.starts_with("text/html")
+        || mime.starts_with("application/xhtml")
+        || mime.starts_with("image/svg")
+        || mime.starts_with("text/xml")
+        || mime.starts_with("application/xml")
+    {
+        mime = "text/plain; charset=utf-8".to_string();
+    }
 
     let disposition = match params.filename {
         Some(name) => format!("inline; filename=\"{}\"", name.replace('"', "_")),

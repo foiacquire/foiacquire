@@ -1810,6 +1810,18 @@
       "unique": false,
       "partial": null
     },
+    "idx_dar_doc_version_type_status": {
+      "name": "idx_dar_doc_version_type_status",
+      "table": "document_analysis_results",
+      "columns": [
+        "document_id",
+        "version_id",
+        "analysis_type",
+        "status"
+      ],
+      "unique": false,
+      "partial": null
+    },
     "idx_document_entities_doc_id": {
       "name": "idx_document_entities_doc_id",
       "table": "document_entities",
@@ -1818,6 +1830,25 @@
       ],
       "unique": false,
       "partial": null
+    },
+    "idx_document_entities_entity_type": {
+      "name": "idx_document_entities_entity_type",
+      "table": "document_entities",
+      "columns": [
+        "entity_type"
+      ],
+      "unique": false,
+      "partial": null
+    },
+    "idx_document_entities_geocoded": {
+      "name": "idx_document_entities_geocoded",
+      "table": "document_entities",
+      "columns": [
+        "latitude",
+        "longitude"
+      ],
+      "unique": false,
+      "partial": "\"latitude\" IS NOT NULL"
     },
     "idx_document_entities_type_text_doc": {
       "name": "idx_document_entities_type_text_doc",
